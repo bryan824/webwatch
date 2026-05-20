@@ -14,10 +14,10 @@ Approach: tighten in place. No feature removal, no config migration, no API brea
 
 - No new features.
 - No condition vocabulary added or removed.
-- No config migration step for the operator.
 - No new dependencies.
 - No project rename.
 - No CDP browser code changes.
+- One operator-visible migration is in scope: splitting `config.toml`'s `[[targets]]` blocks into a separate `targets.toml`. See §14.
 
 ## Headline targets
 
@@ -25,11 +25,12 @@ Approach: tighten in place. No feature removal, no config migration, no API brea
 |---|---|---|
 | `src/` total LOC | ~2,400 | ~1,500 |
 | `db.rs` LOC | 726 | 4 files × ~150 |
-| Config examples | 3 | 1 (+ docker) |
+| Config examples | 3 | 1 service + 1 targets (+ docker) |
 | Condition match-arms in `evaluator.rs` | 9 | 5 + a `negate` flag |
-| `Error` enum variants | 26 | 22 |
+| `Error` enum variants | 26 | 23 (§5 collapses 5→1, §14 adds 1) |
 | Model layers for targets/conditions | 2 (wire + domain) | 1 |
 | Discord embed fields in alert | 2 | 0 |
+| Orphan target rows after deleting from TOML | possible | impossible (purge on load) |
 
 ## Module layout
 
@@ -264,14 +265,15 @@ Each phase is one commit, independently verifiable.
 4. **Discord trim.** Rewrite `send_condition_alert` and `render_status_report`. Update existing Discord test. Full matrix passes.
 5. **Error enum group + scheduler retry removed.** Collapse 5 browser variants into one, delete `check_with_retry`. Full matrix passes.
 6. **Config example consolidation.** Delete two example files, write the unified one, update README. No code change; `cargo build` only.
+7. **Split targets into `targets.toml` + add startup purge.** See §14. Operator-visible migration; README documents the one-time move.
 
-Total: 6 commits, each safely revertable, each preserving the operator-facing contract.
+Total: 7 commits, each safely revertable, each preserving the operator-facing contract.
 
 ## §12. What this changes for each user
 
-- **Operator:** one config example, terser README on the JS-rendered path, identical TOML works after upgrade. Logs become linear (one tick → one outcome).
+- **Operator:** service knobs live in `config.toml`, watch list lives in `targets.toml` — edit the file that matches what you're changing. One config example each, terser README on the JS-rendered path. Removing a target now actually removes it (no orphan SQLite rows). Logs become linear (one tick → one outcome).
 - **Discord recipient:** alerts have a clickable real URL on the embed, no `example.invalid` placeholder, status reports lose the `Engine` / `Price` / `Conditions: 1/1 matched` clutter, one block per target.
-- **Maintainer:** `db.rs` is four readable files instead of one 726-line file; one model layer instead of two; evaluator dispatch is half as wide; the error enum has one browser variant instead of five.
+- **Maintainer:** `db.rs` is four readable files instead of one 726-line file; one model layer instead of two; evaluator dispatch is half as wide; the error enum has one browser variant instead of five; targets have a single source of truth (`targets.toml` → DB).
 
 ## §13. Out of scope (explicitly)
 
@@ -281,4 +283,106 @@ Total: 6 commits, each safely revertable, each preserving the operator-facing co
 - Dropping multi-target support — kept in use.
 - Rewriting the CDP client — works as-is.
 - Adding new condition kinds or new alert channels.
+- Adding `POST /targets` / `DELETE /targets/:id` endpoints — see §14, rejected option B.
 - Any change to `Cargo.toml` beyond what the `src/` move requires (nothing expected).
+
+## §14. Split config: `config.toml` + `targets.toml`
+
+**Problem.** Today's `config.toml` mixes two things with different lifecycles:
+
+| Section | Lifecycle | Source of truth |
+|---|---|---|
+| `sqlite_path`, `user_agent`, `[server]`, `[scheduler]`, `[browser]` | set once | TOML |
+| `[[targets]]` + conditions | edited often | ambiguous — TOML *and* SQLite |
+
+On startup `main.rs` upserts each `[[targets]]` block into the `targets` SQLite table via `ensure_target`. The scheduler reads targets from the in-memory `AppConfig`, but `/targets` reads them from SQLite. There is no purge: if you delete a `[[targets]]` block from TOML and restart, SQLite keeps the orphan row, and `/targets` returns a target the scheduler isn't watching.
+
+**Decision.** Split into two files. `config.toml` carries service knobs only. `targets.toml` carries the watch list. The DB remains the runtime store; TOML remains the seed; we add a startup purge to keep the two in sync.
+
+**File layouts.**
+
+`config.toml` (service config — written once):
+
+```toml
+sqlite_path = "webwatch.sqlite3"
+user_agent = "webwatch/0.1 (+https://example.invalid; low-frequency page monitor)"
+targets_path = "targets.toml"   # optional; default shown
+
+[server]
+bind = "127.0.0.1:3000"
+
+[scheduler]
+default_interval_secs = 300
+jitter_secs = 30
+http_timeout_secs = 20
+
+# [browser]                     # uncomment to enable CDP fallback
+# cdp_url = "ws://127.0.0.1:9222"
+# wait_ms = 5000
+```
+
+`targets.toml` (watch list — edited weekly):
+
+```toml
+[[targets]]
+id = "tom-ford-soleil-neige-eye-color-quad"
+name = "Tom Ford Soleil Neige Eye Color Quad - 01 Chalet Mink"
+url = "https://www.tomfordbeauty.com/products/soleil-neige-eye-color-quad?variant=52128415318229&collection=last-look"
+enabled = true
+
+[[targets.conditions]]
+kind = "text_appears"
+value = "Add to Bag"
+```
+
+**Code changes.**
+
+- `AppConfig` loses its `targets: Vec<Target>` field; that data moves to a new `TargetsFile { targets: Vec<Target> }`.
+- `AppConfig` gains `pub targets_path: Option<String>` with `#[serde(default = "default_targets_path")]` returning `"targets.toml"`.
+- `AppConfig::load(path)` returns `(AppConfig, TargetsFile)`. The TargetsFile is resolved by joining `targets_path` against the parent dir of `config.toml` (or used absolute if absolute).
+- `main.rs` is updated:
+  ```rust
+  let (config, targets) = AppConfig::load(&config_path)?;
+  let config = Arc::new(config);
+  let persistence: Arc<dyn db::Persistence> = ...;
+  persistence.migrate().await?;
+  persistence.sync_targets(&targets.targets).await?;   // new
+  ```
+- `Persistence` gains one method:
+  ```rust
+  async fn sync_targets(&self, targets: &[Target]) -> Result<()>;
+  ```
+  Default impl: `for t in targets { self.ensure_target(t).await?; } self.purge_targets_not_in(targets).await?;`. Each backend implements `purge_targets_not_in` with a single `DELETE FROM targets WHERE id NOT IN (?, ?, …)` parameterized over the current ID list (or `DELETE FROM targets WHERE 1=1` if empty — though `EmptyTargetsSnafu` already prevents an empty list). The `ON DELETE CASCADE` on `target_state` and `checks` cleans up child rows automatically.
+- `scheduler::spawn_all(config, targets, db, client)` takes the targets slice explicitly instead of reading them out of `AppConfig`.
+- `HttpState` keeps the same shape; `notify_status` iterates `targets` instead of `state.config.targets`. Either pass targets into `HttpState`, or have the scheduler/HTTP server share the same `Arc<Vec<Target>>`. Recommended: `HttpState.targets: Arc<Vec<Target>>`.
+
+**Validation.**
+
+- Missing `targets.toml` → `Error::ReadTargets { path, source }` (new variant; net error count 22 → 23 after this phase — still down from 26).
+- Empty `targets.toml` → existing `EmptyTargets` error.
+- `targets_path` may be absolute or relative; relative resolves against the directory of `config.toml`.
+- `WEBWATCH_TARGETS` env var overrides `targets_path` (parallel to `WEBWATCH_CONFIG`).
+
+**Backward compatibility.** None. webwatch is pre-1.0 with a single operator. The migration is: copy `[[targets]]` blocks from `config.toml` into a new `targets.toml`. README documents the one move in two lines.
+
+**Docker.** `docker-compose.yml` mounts both files:
+
+```yaml
+volumes:
+  - ./config.docker.toml:/app/config.toml:ro
+  - ./targets.toml:/app/targets.toml:ro
+  - webwatch-data:/data
+```
+
+**Tests.**
+
+- New `config::tests::loads_split_files` — writes a tempdir `config.toml` + `targets.toml`, asserts they merge correctly.
+- New `config::tests::targets_path_resolves_relative_to_config` — `targets_path = "subdir/targets.toml"` resolves correctly.
+- New `db::tests::sync_targets_purges_removed_rows` (per backend) — insert target A and B, call `sync_targets(&[A])`, assert B is gone from `targets` table.
+- Existing `tests/persistence_backend.rs` updated to call `sync_targets` instead of `ensure_target` directly (or both, since `ensure_target` stays).
+- Existing `tests/http_fixture.rs` updated to construct an in-memory targets list separately from `AppConfig`.
+
+**Rejected alternatives.**
+
+- *B. DB-as-source-of-truth + `POST/DELETE /targets`.* Cleanest model, but expands the HTTP API surface and requires either an admin-only auth tier or expanded use of the existing bearer token. Not worth the complexity for a homelab tool with file-based config that's already in git.
+- *C. Keep one file, add purge only.* Smallest change, fixes the orphan bug, but doesn't address the "scroll past infra to find targets" UX issue.
