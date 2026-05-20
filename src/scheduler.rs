@@ -1,36 +1,185 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use rand::Rng;
+use serde::Serialize;
+use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::{config::AppConfig, config::Target, db::Persistence, discord, evaluator, Result};
 
-pub fn spawn_all(
+#[derive(Clone)]
+pub struct Scheduler {
+    inner: Arc<Mutex<SchedulerInner>>,
     config: Arc<AppConfig>,
-    targets: Arc<Vec<Target>>,
     db: Arc<dyn Persistence>,
     client: reqwest::Client,
-) {
-    for target_config in targets.iter().filter(|target| target.enabled()).cloned() {
-        let config = config.clone();
-        let db = db.clone();
-        let client = client.clone();
+}
+
+#[derive(Default)]
+struct SchedulerInner {
+    tasks: HashMap<String, RunningTarget>,
+}
+
+struct RunningTarget {
+    target: Target,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ReloadReport {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    pub changed: Vec<String>,
+    pub unchanged: Vec<String>,
+}
+
+impl Scheduler {
+    pub fn new(config: Arc<AppConfig>, db: Arc<dyn Persistence>, client: reqwest::Client) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(SchedulerInner::default())),
+            config,
+            db,
+            client,
+        }
+    }
+
+    pub async fn start(&self, targets: &[Target]) {
+        let mut inner = self.inner.lock().await;
+        for target in targets.iter().filter(|target| target.enabled()).cloned() {
+            let id = target.id.clone();
+            let handle = self.spawn_target(target.clone());
+            inner.tasks.insert(id, RunningTarget { target, handle });
+        }
+    }
+
+    pub async fn reload(&self, targets: &[Target]) -> Result<ReloadReport> {
+        let mut inner = self.inner.lock().await;
+        let (mut report, plan) = diff_targets(&inner.tasks, targets);
+        self.db.sync_targets(targets).await?;
+        apply_plan(&mut inner, plan, self);
+        sort_report(&mut report);
+        info!(
+            added = ?report.added,
+            removed = ?report.removed,
+            changed = ?report.changed,
+            unchanged = ?report.unchanged,
+            "scheduler reload"
+        );
+        Ok(report)
+    }
+
+    pub async fn current_targets(&self) -> Vec<Target> {
+        self.inner
+            .lock()
+            .await
+            .tasks
+            .values()
+            .map(|running| running.target.clone())
+            .collect()
+    }
+
+    pub async fn target(&self, id: &str) -> Option<Target> {
+        self.inner
+            .lock()
+            .await
+            .tasks
+            .get(id)
+            .map(|running| running.target.clone())
+    }
+
+    fn spawn_target(&self, target: Target) -> tokio::task::JoinHandle<()> {
+        let config = self.config.clone();
+        let db = self.db.clone();
+        let client = self.client.clone();
         tokio::spawn(async move {
-            if let Err(error) = run_target_loop(config, db, client, target_config).await {
+            if let Err(error) = run_target_loop(config, db, client, target).await {
                 error!(%error, "target loop stopped");
             }
-        });
+        })
     }
+}
+
+enum PlanStep {
+    Remove(String),
+    Add(Target),
+    Change(Target),
+}
+
+fn diff_targets(
+    current: &HashMap<String, RunningTarget>,
+    targets: &[Target],
+) -> (ReloadReport, Vec<PlanStep>) {
+    let desired = targets
+        .iter()
+        .filter(|target| target.enabled())
+        .map(|target| (target.id.clone(), target.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut report = ReloadReport::default();
+    let mut plan = Vec::new();
+
+    for (id, running) in current {
+        match desired.get(id) {
+            Some(target) if *target == running.target => report.unchanged.push(id.clone()),
+            Some(target) => {
+                report.changed.push(id.clone());
+                plan.push(PlanStep::Change(target.clone()));
+            }
+            None => {
+                report.removed.push(id.clone());
+                plan.push(PlanStep::Remove(id.clone()));
+            }
+        }
+    }
+
+    for (id, target) in desired {
+        if !current.contains_key(&id) {
+            report.added.push(id);
+            plan.push(PlanStep::Add(target));
+        }
+    }
+
+    (report, plan)
+}
+
+fn apply_plan(inner: &mut SchedulerInner, plan: Vec<PlanStep>, scheduler: &Scheduler) {
+    for step in plan {
+        match step {
+            PlanStep::Remove(id) => {
+                if let Some(running) = inner.tasks.remove(&id) {
+                    running.handle.abort();
+                }
+            }
+            PlanStep::Add(target) => {
+                let id = target.id.clone();
+                let handle = scheduler.spawn_target(target.clone());
+                inner.tasks.insert(id, RunningTarget { target, handle });
+            }
+            PlanStep::Change(target) => {
+                if let Some(running) = inner.tasks.remove(&target.id) {
+                    running.handle.abort();
+                }
+                let id = target.id.clone();
+                let handle = scheduler.spawn_target(target.clone());
+                inner.tasks.insert(id, RunningTarget { target, handle });
+            }
+        }
+    }
+}
+
+fn sort_report(report: &mut ReloadReport) {
+    report.added.sort();
+    report.removed.sort();
+    report.changed.sort();
+    report.unchanged.sort();
 }
 
 async fn run_target_loop(
     config: Arc<AppConfig>,
     db: Arc<dyn Persistence>,
     client: reqwest::Client,
-    target_config: crate::config::TargetConfig,
+    target: Target,
 ) -> Result<()> {
-    let target = target_config.to_target()?;
-    let interval_secs = target_config.interval_secs(&config);
+    let interval_secs = target.interval_secs(&config);
     info!(target_id = %target.id, interval_secs, "starting target checker");
 
     loop {

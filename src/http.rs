@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::Path as FsPath, sync::Arc};
 
 use axum::{
     extract::{Path, State},
@@ -11,16 +11,17 @@ use serde::Serialize;
 use tower_http::trace::TraceLayer;
 
 use crate::{
-    config::{AppConfig, Target, TargetStatus},
+    config::{AppConfig, TargetStatus, TargetsFile},
     db,
     db::Persistence,
     discord, evaluator,
+    scheduler::{ReloadReport, Scheduler},
 };
 
 #[derive(Clone)]
 pub struct HttpState {
     pub config: Arc<AppConfig>,
-    pub targets: Arc<Vec<Target>>,
+    pub scheduler: Arc<Scheduler>,
     pub db: Arc<dyn Persistence>,
     pub client: reqwest::Client,
 }
@@ -43,12 +44,32 @@ struct NotifyStatusResponse {
     statuses: Vec<TargetStatus>,
 }
 
+#[derive(Debug, Serialize)]
+struct ReloadTargetsResponse {
+    added: Vec<String>,
+    removed: Vec<String>,
+    changed: Vec<String>,
+    unchanged: Vec<String>,
+}
+
+impl From<ReloadReport> for ReloadTargetsResponse {
+    fn from(report: ReloadReport) -> Self {
+        Self {
+            added: report.added,
+            removed: report.removed,
+            changed: report.changed,
+            unchanged: report.unchanged,
+        }
+    }
+}
+
 pub fn router(state: HttpState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/targets", get(targets))
         .route("/targets/:id/status", get(target_status))
         .route("/notify/status", post(notify_status))
+        .route("/targets/reload", post(reload_targets))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }
@@ -96,7 +117,7 @@ async fn notify_status(State(state): State<HttpState>, headers: HeaderMap) -> im
         return response;
     }
 
-    for target in state.targets.iter().filter(|target| target.enabled()) {
+    for target in state.scheduler.current_targets().await {
         if let Err(response) = check_target_by_id(&state, &target.id, true).await {
             return response;
         }
@@ -122,12 +143,33 @@ async fn notify_status(State(state): State<HttpState>, headers: HeaderMap) -> im
     }
 }
 
+async fn reload_targets(State(state): State<HttpState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Some(response) = authorize_required(&state, &headers) {
+        return response;
+    }
+
+    let Some(path) = state.config.targets_path.as_deref() else {
+        return internal_error(crate::Error::Database {
+            message: "targets_path not configured".to_string(),
+        });
+    };
+    let targets = match TargetsFile::load(FsPath::new(path)) {
+        Ok(targets) => targets,
+        Err(error) => return bad_request(error),
+    };
+
+    match state.scheduler.reload(&targets.targets).await {
+        Ok(report) => (StatusCode::OK, Json(ReloadTargetsResponse::from(report))).into_response(),
+        Err(error) => internal_error(error),
+    }
+}
+
 async fn check_target_by_id(
     state: &HttpState,
     id: &str,
     mark_manual_report: bool,
 ) -> Result<(), axum::response::Response> {
-    let Some(target_config) = state.targets.iter().find(|target| target.id == id) else {
+    let Some(target_config) = state.scheduler.target(id).await else {
         return Err(not_found(id));
     };
 
@@ -202,6 +244,16 @@ fn authorize_token(token: &str, headers: &HeaderMap) -> Option<axum::response::R
         )
             .into_response(),
     )
+}
+
+fn bad_request(error: crate::Error) -> axum::response::Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            error: error.to_string(),
+        }),
+    )
+        .into_response()
 }
 
 fn not_found(id: &str) -> axum::response::Response {

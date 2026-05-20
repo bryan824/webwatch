@@ -236,8 +236,9 @@ impl AppConfig {
         let config: AppConfig = toml::from_str(&raw).context(ParseConfigSnafu {
             path: path.to_string(),
         })?;
-        let config = config.resolve_env()?;
+        let mut config = config.resolve_env()?;
         let targets_path = config.resolved_targets_path(path);
+        config.targets_path = Some(targets_path.display().to_string());
         let targets = TargetsFile::load(&targets_path)?;
 
         Ok((config, targets))
@@ -462,7 +463,11 @@ mod tests {
         let (config, targets) =
             AppConfig::load(dir.path().join("config.toml").to_str().unwrap()).expect("load");
 
-        assert_eq!(config.targets_path.as_deref(), Some("targets.toml"));
+        assert!(config
+            .targets_path
+            .as_deref()
+            .expect("targets path")
+            .ends_with("targets.toml"));
         assert_eq!(targets.targets[0].id, "campfire");
     }
 

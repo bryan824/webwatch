@@ -29,7 +29,15 @@ Use the status API on demand to verify service health, target status, engine use
 
 Use `POST /notify/status` to fresh-check all enabled targets and send one compact status report to Discord. This is the webhook verification path; webwatch sends no startup or heartbeat messages.
 
-If binding publicly, set `WEBWATCH_API_TOKEN`; protected endpoints require it. `POST /notify/status` always requires it:
+Edit `targets.toml` and reload the watch list without restarting:
+
+```bash
+curl -X POST -H "Authorization: Bearer $WEBWATCH_API_TOKEN" http://127.0.0.1:3000/targets/reload
+```
+
+Changes to `config.toml` require a process restart.
+
+If binding publicly, set `WEBWATCH_API_TOKEN`; protected endpoints require it. `POST /notify/status` and `POST /targets/reload` always require it:
 
 ```bash
 curl -H "Authorization: Bearer $WEBWATCH_API_TOKEN" http://127.0.0.1:3000/targets

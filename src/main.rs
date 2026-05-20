@@ -38,16 +38,16 @@ async fn run() -> Result<()> {
         .build()
         .context(BuildHttpClientSnafu)?;
 
-    scheduler::spawn_all(
+    let scheduler = Arc::new(scheduler::Scheduler::new(
         config.clone(),
-        targets.clone(),
         persistence.clone(),
         client.clone(),
-    );
+    ));
+    scheduler.start(&targets).await;
 
     let state = HttpState {
         config: config.clone(),
-        targets,
+        scheduler,
         db: persistence,
         client: client.clone(),
     };
