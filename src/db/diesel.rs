@@ -3,8 +3,8 @@ use snafu::ResultExt;
 
 use crate::{
     config::TargetConfig,
+    config::{CheckOutcome, TargetStatus},
     error::{Result, SerializeStateSnafu},
-    models::{CheckOutcome, TargetStatus},
 };
 
 use super::{

@@ -1,8 +1,8 @@
 use chrono::Utc;
 use webwatch::{
+    config::{CheckOutcome, ConditionKind, EngineUsed},
     config::{ConditionConfig, TargetConfig},
     db,
-    models::{CheckOutcome, ConditionKind, EngineUsed},
 };
 
 fn target_config() -> TargetConfig {
@@ -10,7 +10,7 @@ fn target_config() -> TargetConfig {
         id: "target".to_string(),
         name: "Target".to_string(),
         url: "https://example.com/product".to_string(),
-        enabled: Some(true),
+        enabled: true,
         interval_secs: None,
         conditions: vec![ConditionConfig {
             id: Some("stock".to_string()),

@@ -10,7 +10,7 @@ use axum::{
 use serde::Serialize;
 use tower_http::trace::TraceLayer;
 
-use crate::{config::AppConfig, db, db::Persistence, discord, evaluator, models::TargetStatus};
+use crate::{config::AppConfig, config::TargetStatus, db, db::Persistence, discord, evaluator};
 
 #[derive(Clone)]
 pub struct HttpState {

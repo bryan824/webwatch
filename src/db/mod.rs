@@ -17,8 +17,8 @@ use snafu::ResultExt;
 
 use crate::{
     config::TargetConfig,
+    config::{CheckOutcome, EngineUsed, TargetStatus},
     error::{ParseStateSnafu, Result},
-    models::{CheckOutcome, EngineUsed, TargetStatus},
 };
 
 #[cfg(all(

@@ -7,9 +7,9 @@ use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
 
 use crate::{
     config::AppConfig,
+    config::{CheckOutcome, EngineUsed, Target},
     error::{BrowserProtocolSnafu, BrowserResponseMissingSnafu, MissingBrowserCdpUrlSnafu, Result},
     evaluator,
-    models::{CheckOutcome, EngineUsed, Target},
 };
 
 pub async fn check_with_browser(config: &AppConfig, target: Target) -> Result<CheckOutcome> {
@@ -121,10 +121,10 @@ impl CdpClient {
 #[cfg(test)]
 mod tests {
     use crate::{
+        config::ConditionKind,
         config::{
             AppConfig, BrowserConfig, ConditionConfig, SchedulerConfig, ServerConfig, TargetConfig,
         },
-        models::ConditionKind,
     };
 
     #[test]
@@ -166,7 +166,7 @@ mod tests {
                 id: "target".to_string(),
                 name: "Target".to_string(),
                 url: "https://example.com".to_string(),
-                enabled: Some(true),
+                enabled: true,
                 interval_secs: None,
                 conditions: vec![ConditionConfig {
                     id: None,

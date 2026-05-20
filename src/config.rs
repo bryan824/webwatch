@@ -1,11 +1,13 @@
 use std::{env, fs, time::Duration};
 
-use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Deserializer, Serialize};
 use snafu::{ensure, ResultExt};
+use url::Url;
 
-use crate::{
-    error::{EmptyTargetsSnafu, ParseConfigSnafu, ReadConfigSnafu, Result},
-    models::{ConditionKind, Target},
+use crate::error::{
+    EmptyConditionsSnafu, EmptyTargetsSnafu, ParseConfigSnafu, ParseTargetUrlSnafu,
+    ReadConfigSnafu, Result,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -25,7 +27,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub browser: BrowserConfig,
     #[serde(default)]
-    pub targets: Vec<TargetConfig>,
+    pub targets: Vec<Target>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -52,21 +54,24 @@ pub struct BrowserConfig {
     pub wait_ms: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TargetConfig {
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Target {
     pub id: String,
     pub name: String,
+    #[serde(deserialize_with = "deserialize_url")]
     pub url: String,
-    #[serde(default)]
-    pub enabled: Option<bool>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     #[serde(default)]
     pub interval_secs: Option<u64>,
     #[serde(default)]
-    pub conditions: Vec<ConditionConfig>,
+    pub conditions: Vec<Condition>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ConditionConfig {
+pub type TargetConfig = Target;
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Condition {
     #[serde(default)]
     pub id: Option<String>,
     pub kind: ConditionKind,
@@ -78,6 +83,66 @@ pub struct ConditionConfig {
     pub threshold_cents: Option<i64>,
     #[serde(default)]
     pub price_selector: Option<String>,
+}
+
+pub type ConditionConfig = Condition;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConditionKind {
+    TextAppears,
+    TextDisappears,
+    SelectorExists,
+    SelectorMissing,
+    SelectorTextContains,
+    SelectorTextNotContains,
+    PriceBelow,
+    PriceAbove,
+    PriceChanged,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EngineUsed {
+    Http,
+    BrowserCdp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConditionResult {
+    pub condition_id: String,
+    pub kind: ConditionKind,
+    pub matched: bool,
+    pub evidence: Vec<String>,
+    pub observed_price_cents: Option<i64>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckOutcome {
+    pub target: Target,
+    pub engine_used: EngineUsed,
+    pub matched: bool,
+    pub checked_at: DateTime<Utc>,
+    pub price_cents: Option<i64>,
+    pub evidence: Vec<String>,
+    pub condition_results: Vec<ConditionResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TargetStatus {
+    pub target_id: String,
+    pub name: String,
+    pub url: String,
+    pub matched: Option<bool>,
+    pub engine_used: Option<EngineUsed>,
+    pub price_cents: Option<i64>,
+    pub evidence: Vec<String>,
+    pub condition_results: Vec<ConditionResult>,
+    pub last_success_at: Option<String>,
+    pub last_error_at: Option<String>,
+    pub last_error: Option<String>,
+    pub last_alert_at: Option<String>,
 }
 
 impl AppConfig {
@@ -101,8 +166,8 @@ impl AppConfig {
         }
 
         ensure!(!self.targets.is_empty(), EmptyTargetsSnafu);
-        for target in &self.targets {
-            Target::from_config(target)?;
+        for target in &mut self.targets {
+            target.validate_and_resolve()?;
         }
 
         Ok(self)
@@ -131,9 +196,9 @@ impl Default for SchedulerConfig {
     }
 }
 
-impl TargetConfig {
+impl Target {
     pub fn enabled(&self) -> bool {
-        self.enabled.unwrap_or(true)
+        self.enabled
     }
 
     pub fn interval_secs(&self, config: &AppConfig) -> u64 {
@@ -142,8 +207,47 @@ impl TargetConfig {
     }
 
     pub fn to_target(&self) -> Result<Target> {
-        Target::from_config(self)
+        let mut target = self.clone();
+        target.validate_and_resolve()?;
+        Ok(target)
     }
+
+    fn validate_and_resolve(&mut self) -> Result<()> {
+        Url::parse(&self.url).context(ParseTargetUrlSnafu {
+            target_id: self.id.clone(),
+        })?;
+        ensure!(
+            !self.conditions.is_empty(),
+            EmptyConditionsSnafu {
+                target_id: self.id.clone()
+            }
+        );
+        for (index, condition) in self.conditions.iter_mut().enumerate() {
+            if condition.id.is_none() {
+                condition.id = Some(format!("condition-{}", index + 1));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl CheckOutcome {
+    pub fn condition_met(&self) -> bool {
+        self.matched
+    }
+}
+
+fn deserialize_url<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    Url::parse(&value).map_err(serde::de::Error::custom)?;
+    Ok(value)
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_sqlite_path() -> String {
@@ -172,4 +276,33 @@ fn default_http_timeout_secs() -> u64 {
 
 fn default_browser_wait_ms() -> u64 {
     5_000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppConfig, ConditionKind};
+
+    #[test]
+    fn builds_generic_target_from_url_and_conditions() {
+        let raw = r#"
+            [[targets]]
+            id = "campfire"
+            name = "Campfire Mug"
+            url = "https://example.com/product"
+
+            [[targets.conditions]]
+            kind = "text_appears"
+            value = "Add to cart"
+        "#;
+
+        let config = toml::from_str::<AppConfig>(raw)
+            .expect("parse config")
+            .resolve_env_and_validate()
+            .expect("valid target");
+
+        let target = &config.targets[0];
+        assert_eq!(target.url, "https://example.com/product");
+        assert_eq!(target.conditions[0].id.as_deref(), Some("condition-1"));
+        assert_eq!(target.conditions[0].kind, ConditionKind::TextAppears);
+    }
 }

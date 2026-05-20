@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use rand::Rng;
 use tracing::{error, info, warn};
 
-use crate::{config::AppConfig, db::Persistence, discord, evaluator, models::Target, Result};
+use crate::{config::AppConfig, config::Target, db::Persistence, discord, evaluator, Result};
 
 pub fn spawn_all(config: Arc<AppConfig>, db: Arc<dyn Persistence>, client: reqwest::Client) {
     for target_config in config
@@ -87,7 +87,7 @@ async fn check_with_retry(
     config: &AppConfig,
     client: &reqwest::Client,
     target: Target,
-) -> Result<crate::models::CheckOutcome> {
+) -> Result<crate::config::CheckOutcome> {
     match evaluator::check_target(config, client, target.clone()).await {
         Ok(outcome) => Ok(outcome),
         Err(first_error) => {

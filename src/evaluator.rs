@@ -6,8 +6,8 @@ use snafu::{ensure, ResultExt};
 use crate::{
     browser,
     config::AppConfig,
+    config::{CheckOutcome, Condition, ConditionKind, ConditionResult, EngineUsed, Target},
     error::{BrowserRequiredSnafu, HttpStatusSnafu, RequestSnafu, Result},
-    models::{CheckOutcome, Condition, ConditionKind, ConditionResult, EngineUsed, Target},
 };
 
 pub async fn check_target(
@@ -70,7 +70,7 @@ pub fn evaluate_document(
     for condition in &target.conditions {
         let result = evaluate_condition(condition, &document, &page_text, body)?;
         if !result.matched && should_try_browser(condition, looks_js_rendered, &result) {
-            needs_browser_reasons.push(format!("{} not proven by HTTP", condition.id));
+            needs_browser_reasons.push(format!("{} not proven by HTTP", condition_id(condition)));
         }
         if price_cents.is_none() {
             price_cents = result.observed_price_cents;
@@ -214,7 +214,7 @@ fn evaluate_condition(
     }
 
     Ok(ConditionResult {
-        condition_id: condition.id.clone(),
+        condition_id: condition_id(condition),
         kind: condition.kind,
         matched,
         evidence,
@@ -223,12 +223,19 @@ fn evaluate_condition(
     })
 }
 
+fn condition_id(condition: &Condition) -> String {
+    condition
+        .id
+        .clone()
+        .unwrap_or_else(|| "condition".to_string())
+}
+
 fn required_value(condition: &Condition) -> Result<&str> {
     condition
         .value
         .as_deref()
         .ok_or_else(|| crate::Error::MissingConditionField {
-            condition_id: condition.id.clone(),
+            condition_id: condition_id(condition),
             field: "value",
         })
 }
@@ -238,7 +245,7 @@ fn required_selector(condition: &Condition) -> Result<&str> {
         .selector
         .as_deref()
         .ok_or_else(|| crate::Error::MissingConditionField {
-            condition_id: condition.id.clone(),
+            condition_id: condition_id(condition),
             field: "selector",
         })
 }
@@ -247,7 +254,7 @@ fn required_threshold(condition: &Condition) -> Result<i64> {
     condition
         .threshold_cents
         .ok_or_else(|| crate::Error::MissingConditionField {
-            condition_id: condition.id.clone(),
+            condition_id: condition_id(condition),
             field: "threshold_cents",
         })
 }
@@ -336,13 +343,15 @@ fn money(cents: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{evaluate_document, first_price_cents};
-    use crate::models::{Condition, ConditionKind, EngineUsed, Target};
+    use crate::config::{Condition, ConditionKind, EngineUsed, Target};
 
     fn target(condition: Condition) -> Target {
         Target {
             id: "target".to_string(),
             name: "Target".to_string(),
             url: "https://example.com/product".to_string(),
+            enabled: true,
+            interval_secs: None,
             conditions: vec![condition],
         }
     }
@@ -356,7 +365,7 @@ mod tests {
     #[test]
     fn evaluates_selector_text_condition() {
         let condition = Condition {
-            id: "stock".to_string(),
+            id: Some("stock".to_string()),
             kind: ConditionKind::SelectorTextContains,
             value: Some("Add to cart".to_string()),
             selector: Some("button".to_string()),

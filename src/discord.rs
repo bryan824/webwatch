@@ -3,8 +3,8 @@ use snafu::{ensure, OptionExt, ResultExt};
 
 use crate::{
     config::AppConfig,
+    config::{CheckOutcome, TargetStatus},
     error::{DiscordStatusSnafu, MissingDiscordWebhookSnafu, RequestSnafu, Result},
-    models::{CheckOutcome, TargetStatus},
 };
 
 #[derive(Debug, Serialize)]
@@ -213,7 +213,7 @@ fn format_price(cents: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::render_status_report;
-    use crate::models::{ConditionKind, ConditionResult, EngineUsed, TargetStatus};
+    use crate::config::{ConditionKind, ConditionResult, EngineUsed, TargetStatus};
 
     #[test]
     fn status_report_includes_counts_url_and_condition_summary() {

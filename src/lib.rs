@@ -5,7 +5,6 @@ pub mod discord;
 pub mod error;
 pub mod evaluator;
 pub mod http;
-pub mod models;
 pub mod scheduler;
 
 pub use error::{Error, Result};

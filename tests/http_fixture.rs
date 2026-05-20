@@ -5,8 +5,8 @@ use webwatch::{
     config::{
         AppConfig, BrowserConfig, ConditionConfig, SchedulerConfig, ServerConfig, TargetConfig,
     },
+    config::{ConditionKind, EngineUsed},
     evaluator,
-    models::{ConditionKind, EngineUsed},
 };
 
 async fn spawn_fixture() -> SocketAddr {
@@ -85,7 +85,7 @@ fn config_for(url: String, conditions: Vec<ConditionConfig>) -> AppConfig {
             id: "fixture".to_string(),
             name: "Fixture".to_string(),
             url,
-            enabled: Some(true),
+            enabled: true,
             interval_secs: None,
             conditions,
         }],
