@@ -45,7 +45,7 @@ async fn run_once(
     client: &reqwest::Client,
     target: Target,
 ) {
-    match check_with_retry(config, client, target.clone()).await {
+    match evaluator::check_target(config, client, target.clone()).await {
         Ok(outcome) => match db.record_success(&outcome).await {
             Ok(should_alert) => {
                 info!(
@@ -79,21 +79,6 @@ async fn run_once(
             if let Err(record_error) = db.record_error(&target.id, &error_text).await {
                 error!(%record_error, target_id = %target.id, "failed to record check error");
             }
-        }
-    }
-}
-
-async fn check_with_retry(
-    config: &AppConfig,
-    client: &reqwest::Client,
-    target: Target,
-) -> Result<crate::config::CheckOutcome> {
-    match evaluator::check_target(config, client, target.clone()).await {
-        Ok(outcome) => Ok(outcome),
-        Err(first_error) => {
-            warn!(%first_error, target_id = %target.id, "check attempt failed; retrying once");
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            evaluator::check_target(config, client, target).await
         }
     }
 }

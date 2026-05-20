@@ -44,20 +44,11 @@ pub enum Error {
     #[snafu(display("browser CDP endpoint not configured"))]
     MissingBrowserCdpUrl,
 
-    #[snafu(display("connect to browser CDP endpoint {url}: {message}"))]
-    BrowserConnect { url: String, message: String },
-
-    #[snafu(display("send browser CDP command {method}: {message}"))]
-    BrowserSend { method: String, message: String },
-
-    #[snafu(display("read browser CDP response for {method}: {message}"))]
-    BrowserRead { method: String, message: String },
-
-    #[snafu(display("browser CDP command {method} failed: {message}"))]
-    BrowserProtocol { method: String, message: String },
-
-    #[snafu(display("browser CDP command {method} did not return {field}"))]
-    BrowserResponseMissing { method: String, field: String },
+    #[snafu(display("browser CDP {stage} failed: {message}"))]
+    Browser {
+        stage: &'static str,
+        message: String,
+    },
 
     #[snafu(display("parse server bind address {addr}: {source}"))]
     ParseBindAddr {

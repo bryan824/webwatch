@@ -8,7 +8,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
 use crate::{
     config::AppConfig,
     config::{CheckOutcome, EngineUsed, Target},
-    error::{BrowserProtocolSnafu, BrowserResponseMissingSnafu, MissingBrowserCdpUrlSnafu, Result},
+    error::{MissingBrowserCdpUrlSnafu, Result},
     evaluator,
 };
 
@@ -23,13 +23,9 @@ async fn fetch_rendered_html(config: &AppConfig, url: &str) -> Result<String> {
         .cdp_url
         .as_deref()
         .context(MissingBrowserCdpUrlSnafu)?;
-    let (stream, _) =
-        connect_async(cdp_url)
-            .await
-            .map_err(|error| crate::Error::BrowserConnect {
-                url: cdp_url.to_string(),
-                message: error.to_string(),
-            })?;
+    let (stream, _) = connect_async(cdp_url)
+        .await
+        .map_err(|error| browser_error("connect", format!("{cdp_url}: {error}")))?;
     let mut client = CdpClient { stream, next_id: 1 };
 
     client.command("Page.enable", json!({})).await?;
@@ -54,10 +50,16 @@ async fn fetch_rendered_html(config: &AppConfig, url: &str) -> Result<String> {
         .and_then(|value| value.get("value"))
         .and_then(Value::as_str)
         .map(str::to_string)
-        .ok_or_else(|| crate::Error::BrowserResponseMissing {
-            method: "Runtime.evaluate".to_string(),
-            field: "result.result.value".to_string(),
+        .ok_or_else(|| {
+            browser_error(
+                "response_missing",
+                "Runtime.evaluate missing result.result.value".to_string(),
+            )
         })
+}
+
+fn browser_error(stage: &'static str, message: String) -> crate::Error {
+    crate::Error::Browser { stage, message }
 }
 
 type MaybeTlsStream = tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>;
@@ -79,42 +81,33 @@ impl CdpClient {
         self.stream
             .send(Message::Text(message.to_string().into()))
             .await
-            .map_err(|error| crate::Error::BrowserSend {
-                method: method.to_string(),
-                message: error.to_string(),
-            })?;
+            .map_err(|error| browser_error("send", format!("{method}: {error}")))?;
 
         while let Some(message) = self.stream.next().await {
-            let message = message.map_err(|error| crate::Error::BrowserRead {
-                method: method.to_string(),
-                message: error.to_string(),
-            })?;
+            let message =
+                message.map_err(|error| browser_error("read", format!("{method}: {error}")))?;
             let Message::Text(text) = message else {
                 continue;
             };
-            let value: Value =
-                serde_json::from_str(&text).map_err(|error| crate::Error::BrowserProtocol {
-                    method: method.to_string(),
-                    message: format!("invalid JSON response: {error}"),
-                })?;
+            let value: Value = serde_json::from_str(&text).map_err(|error| {
+                browser_error(
+                    "protocol",
+                    format!("{method}: invalid JSON response: {error}"),
+                )
+            })?;
             if value.get("id").and_then(Value::as_u64) != Some(id) {
                 continue;
             }
             if let Some(error) = value.get("error") {
-                return BrowserProtocolSnafu {
-                    method: method.to_string(),
-                    message: error.to_string(),
-                }
-                .fail();
+                return Err(browser_error("protocol", format!("{method}: {error}")));
             }
             return Ok(value);
         }
 
-        BrowserResponseMissingSnafu {
-            method: method.to_string(),
-            field: "response".to_string(),
-        }
-        .fail()
+        Err(browser_error(
+            "response_missing",
+            format!("{method} missing response"),
+        ))
     }
 }
 
