@@ -1,0 +1,8 @@
+/target
+/webwatch.sqlite3
+/config.toml
+/config.docker.toml
+/.env
+
+/.rpiv
+/.pi

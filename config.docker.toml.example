@@ -1,0 +1,22 @@
+sqlite_path = "/data/webwatch.sqlite3"
+user_agent = "webwatch/0.1 (+https://example.invalid; low-frequency page monitor)"
+
+[server]
+# Container listens on all interfaces; docker-compose publishes only host 127.0.0.1.
+bind = "0.0.0.0:3000"
+
+[scheduler]
+default_interval_secs = 300
+jitter_secs = 30
+http_timeout_secs = 20
+
+
+[[targets]]
+id = "campfire-mug"
+name = "Campfire Mug"
+url = "https://example.com/products/campfire-mug"
+enabled = true
+
+[[targets.conditions]]
+kind = "text_appears"
+value = "Add to cart"

@@ -1,0 +1,12 @@
+.git
+.github
+.pi
+.rpiv
+target
+webwatch.sqlite3
+config.toml
+config.docker.toml
+.env
+.env.*
+docker-compose.yml
+README.md

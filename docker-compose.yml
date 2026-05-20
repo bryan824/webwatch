@@ -1,0 +1,23 @@
+services:
+  lightpanda:
+    image: lightpanda/browser:nightly
+    profiles: ["browser"]
+    command: ["serve", "--host", "0.0.0.0", "--port", "9222"]
+    ports:
+      - "127.0.0.1:9222:9222"
+
+  webwatch:
+    build: .
+    restart: unless-stopped
+    environment:
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:?set DISCORD_WEBHOOK_URL}
+      WEBWATCH_API_TOKEN: ${WEBWATCH_API_TOKEN:-}
+      RUST_LOG: ${RUST_LOG:-webwatch=info,tower_http=info}
+    volumes:
+      - ./config.docker.toml:/app/config.toml:ro
+      - webwatch-data:/data
+    ports:
+      - "127.0.0.1:3000:3000"
+
+volumes:
+  webwatch-data:
