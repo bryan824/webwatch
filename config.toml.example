@@ -9,6 +9,10 @@ default_interval_secs = 300
 jitter_secs = 30
 http_timeout_secs = 20
 
+# Uncomment to evaluate JavaScript-rendered pages with Lightpanda/CDP.
+# [browser]
+# cdp_url = "ws://127.0.0.1:9222"
+# wait_ms = 5000
 
 [[targets]]
 id = "campfire-mug"
@@ -20,13 +24,14 @@ enabled = true
 kind = "text_appears"
 value = "Add to cart"
 
-[[targets]]
-id = "sale-price"
-name = "Sale Price Watch"
-url = "https://example.com/products/sale-item"
-enabled = true
-
-[[targets.conditions]]
-kind = "price_below"
-threshold_cents = 5000
-price_selector = ".price"
+# Uncomment to watch a second target for a sale price.
+# [[targets]]
+# id = "sale-price"
+# name = "Sale Price Watch"
+# url = "https://example.com/products/sale-item"
+# enabled = true
+#
+# [[targets.conditions]]
+# kind = "price_below"
+# threshold_cents = 5000
+# price_selector = ".price"

@@ -72,20 +72,11 @@ All conditions on a target must match before an alert is sent.
 
 HTTP checks are tried first. If a page looks JavaScript-rendered and HTTP cannot prove a positive condition, webwatch can use an optional CDP browser endpoint.
 
-Lightpanda is the intended lightweight browser backend:
+Lightpanda is the intended lightweight browser backend. Uncomment the `[browser]` block in `config.toml` and run a Lightpanda container:
 
 ```bash
 docker run -p 127.0.0.1:9222:9222 lightpanda/browser:nightly
-cp config.advanced.toml.example config.toml
 cargo run
-```
-
-Set:
-
-```toml
-[browser]
-cdp_url = "ws://127.0.0.1:9222"
-wait_ms = 5000
 ```
 
 Lightpanda is optional and runs outside the Rust app. HTTP-only targets do not require it.
