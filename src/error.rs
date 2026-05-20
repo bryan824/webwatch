@@ -17,6 +17,12 @@ pub enum Error {
         source: toml::de::Error,
     },
 
+    #[snafu(display("read targets {path}: {source}"))]
+    ReadTargets {
+        path: String,
+        source: std::io::Error,
+    },
+
     #[snafu(display("config must define at least one target"))]
     EmptyTargets,
 

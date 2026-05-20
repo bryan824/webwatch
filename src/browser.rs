@@ -113,12 +113,7 @@ impl CdpClient {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        config::ConditionKind,
-        config::{
-            AppConfig, BrowserConfig, ConditionConfig, SchedulerConfig, ServerConfig, TargetConfig,
-        },
-    };
+    use crate::config::{AppConfig, BrowserConfig, SchedulerConfig, ServerConfig};
 
     #[test]
     fn browser_config_can_parse_cdp_url() {
@@ -152,25 +147,10 @@ mod tests {
             user_agent: "test".to_string(),
             discord_webhook_url: None,
             api_token: None,
+            targets_path: Some("targets.toml".to_string()),
             server: ServerConfig::default(),
             scheduler: SchedulerConfig::default(),
             browser: BrowserConfig::default(),
-            targets: vec![TargetConfig {
-                id: "target".to_string(),
-                name: "Target".to_string(),
-                url: "https://example.com".to_string(),
-                enabled: true,
-                interval_secs: None,
-                conditions: vec![ConditionConfig {
-                    id: None,
-                    kind: ConditionKind::Text,
-                    negate: false,
-                    value: Some("Add to cart".to_string()),
-                    selector: None,
-                    threshold_cents: None,
-                    price_selector: None,
-                }],
-            }],
         };
 
         assert!(config.browser.cdp_url.is_none());

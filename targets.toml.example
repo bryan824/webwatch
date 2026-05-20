@@ -1,0 +1,21 @@
+[[targets]]
+id = "campfire-mug"
+name = "Campfire Mug"
+url = "https://example.com/products/campfire-mug"
+enabled = true
+
+[[targets.conditions]]
+kind = "text_appears"
+value = "Add to cart"
+
+# Uncomment to watch a second target for a sale price.
+# [[targets]]
+# id = "sale-price"
+# name = "Sale Price Watch"
+# url = "https://example.com/products/sale-item"
+# enabled = true
+#
+# [[targets.conditions]]
+# kind = "price_below"
+# threshold_cents = 5000
+# price_selector = ".price"

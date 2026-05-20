@@ -57,6 +57,35 @@ impl Persistence for SeaOrmPersistence {
         .await
     }
 
+    async fn purge_targets_not_in(&self, targets: &[TargetConfig]) -> Result<()> {
+        let keep = targets
+            .iter()
+            .map(|target| target.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let remove = self
+            .statuses()
+            .await?
+            .into_iter()
+            .filter(|status| !keep.contains(status.target_id.as_str()))
+            .map(|status| status.target_id)
+            .collect::<Vec<_>>();
+        for target_id in remove {
+            self.exec(
+                "DELETE FROM checks WHERE target_id = ?1",
+                vec![target_id.clone().into()],
+            )
+            .await?;
+            self.exec(
+                "DELETE FROM target_state WHERE target_id = ?1",
+                vec![target_id.clone().into()],
+            )
+            .await?;
+            self.exec("DELETE FROM targets WHERE id = ?1", vec![target_id.into()])
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn record_success(&self, outcome: &CheckOutcome) -> Result<bool> {
         let was_matched = self
             .query_one_i64(

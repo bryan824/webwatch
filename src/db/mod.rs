@@ -16,8 +16,7 @@ use async_trait::async_trait;
 use snafu::ResultExt;
 
 use crate::{
-    config::TargetConfig,
-    config::{CheckOutcome, EngineUsed, TargetStatus},
+    config::{CheckOutcome, EngineUsed, Target, TargetConfig, TargetStatus},
     error::{ParseStateSnafu, Result},
 };
 
@@ -76,6 +75,13 @@ pub(crate) const STATUS_SQL: &str = "SELECT t.id, t.name, t.url, s.matched, s.en
 pub trait Persistence: Send + Sync {
     async fn migrate(&self) -> Result<()>;
     async fn ensure_target(&self, target: &TargetConfig) -> Result<()>;
+    async fn purge_targets_not_in(&self, targets: &[Target]) -> Result<()>;
+    async fn sync_targets(&self, targets: &[Target]) -> Result<()> {
+        for target in targets {
+            self.ensure_target(target).await?;
+        }
+        self.purge_targets_not_in(targets).await
+    }
     async fn record_success(&self, outcome: &CheckOutcome) -> Result<bool>;
     async fn record_error(&self, target_id: &str, error: &str) -> Result<()>;
     async fn mark_alert_sent(&self, target_id: &str) -> Result<()>;

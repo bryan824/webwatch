@@ -136,6 +136,45 @@ impl Persistence for DieselPersistence {
         .await
     }
 
+    async fn purge_targets_not_in(&self, targets: &[TargetConfig]) -> Result<()> {
+        let keep = targets
+            .iter()
+            .map(|target| target.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let remove = self
+            .statuses()
+            .await?
+            .into_iter()
+            .filter(|status| !keep.contains(status.target_id.as_str()))
+            .map(|status| status.target_id)
+            .collect::<Vec<_>>();
+        if remove.is_empty() {
+            return Ok(());
+        }
+
+        let pool = self.pool.clone();
+        spawn(move || {
+            use diesel::sql_types::Text;
+            let conn = &mut conn(&pool)?;
+            for target_id in remove {
+                sql_query("DELETE FROM checks WHERE target_id = ?1")
+                    .bind::<Text, _>(&target_id)
+                    .execute(conn)
+                    .map_err(db_err)?;
+                sql_query("DELETE FROM target_state WHERE target_id = ?1")
+                    .bind::<Text, _>(&target_id)
+                    .execute(conn)
+                    .map_err(db_err)?;
+                sql_query("DELETE FROM targets WHERE id = ?1")
+                    .bind::<Text, _>(&target_id)
+                    .execute(conn)
+                    .map_err(db_err)?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
     async fn record_success(&self, outcome: &CheckOutcome) -> Result<bool> {
         let pool = self.pool.clone();
         let outcome = outcome.clone();

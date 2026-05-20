@@ -1,5 +1,6 @@
 sqlite_path = "webwatch.sqlite3"
 user_agent = "webwatch/0.1 (+https://example.invalid; low-frequency page monitor)"
+targets_path = "targets.toml"
 
 [server]
 bind = "127.0.0.1:3000"
@@ -13,25 +14,3 @@ http_timeout_secs = 20
 # [browser]
 # cdp_url = "ws://127.0.0.1:9222"
 # wait_ms = 5000
-
-[[targets]]
-id = "campfire-mug"
-name = "Campfire Mug"
-url = "https://example.com/products/campfire-mug"
-enabled = true
-
-[[targets.conditions]]
-kind = "text_appears"
-value = "Add to cart"
-
-# Uncomment to watch a second target for a sale price.
-# [[targets]]
-# id = "sale-price"
-# name = "Sale Price Watch"
-# url = "https://example.com/products/sale-item"
-# enabled = true
-#
-# [[targets.conditions]]
-# kind = "price_below"
-# threshold_cents = 5000
-# price_selector = ".price"

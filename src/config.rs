@@ -1,4 +1,8 @@
-use std::{env, fs, time::Duration};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use chrono::{DateTime, Utc};
 use serde::ser::SerializeStruct;
@@ -8,7 +12,7 @@ use url::Url;
 
 use crate::error::{
     EmptyConditionsSnafu, EmptyTargetsSnafu, ParseConfigSnafu, ParseTargetUrlSnafu,
-    ReadConfigSnafu, Result,
+    ReadConfigSnafu, ReadTargetsSnafu, Result,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -21,12 +25,18 @@ pub struct AppConfig {
     pub discord_webhook_url: Option<String>,
     #[serde(default)]
     pub api_token: Option<String>,
+    #[serde(default = "default_targets_path")]
+    pub targets_path: Option<String>,
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
     pub scheduler: SchedulerConfig,
     #[serde(default)]
     pub browser: BrowserConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TargetsFile {
     #[serde(default)]
     pub targets: Vec<Target>,
 }
@@ -219,35 +229,72 @@ pub struct TargetStatus {
 }
 
 impl AppConfig {
-    pub fn load(path: &str) -> Result<Self> {
+    pub fn load(path: &str) -> Result<(Self, TargetsFile)> {
         let raw = fs::read_to_string(path).context(ReadConfigSnafu {
             path: path.to_string(),
         })?;
         let config: AppConfig = toml::from_str(&raw).context(ParseConfigSnafu {
             path: path.to_string(),
         })?;
+        let config = config.resolve_env()?;
+        let targets_path = config.resolved_targets_path(path);
+        let targets = TargetsFile::load(&targets_path)?;
 
-        config.resolve_env_and_validate()
+        Ok((config, targets))
     }
 
-    pub fn resolve_env_and_validate(mut self) -> Result<Self> {
+    pub fn resolve_env(mut self) -> Result<Self> {
         if self.discord_webhook_url.is_none() {
             self.discord_webhook_url = env::var("DISCORD_WEBHOOK_URL").ok();
         }
         if self.api_token.is_none() {
             self.api_token = env::var("WEBWATCH_API_TOKEN").ok();
         }
-
-        ensure!(!self.targets.is_empty(), EmptyTargetsSnafu);
-        for target in &mut self.targets {
-            target.validate_and_resolve()?;
+        if let Ok(path) = env::var("WEBWATCH_TARGETS") {
+            self.targets_path = Some(path);
         }
 
         Ok(self)
     }
 
+    pub fn resolved_targets_path(&self, config_path: &str) -> PathBuf {
+        let default_path = default_targets_path().unwrap_or_else(|| "targets.toml".to_string());
+        let targets_path = self
+            .targets_path
+            .as_deref()
+            .unwrap_or(default_path.as_str());
+        let path = Path::new(targets_path);
+        if path.is_absolute() {
+            return path.to_path_buf();
+        }
+        Path::new(config_path)
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(path)
+    }
+
     pub fn http_timeout(&self) -> Duration {
         Duration::from_secs(self.scheduler.http_timeout_secs)
+    }
+}
+
+impl TargetsFile {
+    pub fn load(path: &Path) -> Result<Self> {
+        let path_string = path.display().to_string();
+        let raw = fs::read_to_string(path).context(ReadTargetsSnafu {
+            path: path_string.clone(),
+        })?;
+        let targets: TargetsFile =
+            toml::from_str(&raw).context(ParseConfigSnafu { path: path_string })?;
+        targets.resolve_and_validate()
+    }
+
+    pub fn resolve_and_validate(mut self) -> Result<Self> {
+        ensure!(!self.targets.is_empty(), EmptyTargetsSnafu);
+        for target in &mut self.targets {
+            target.validate_and_resolve()?;
+        }
+        Ok(self)
     }
 }
 
@@ -327,6 +374,10 @@ fn default_sqlite_path() -> String {
     "webwatch.sqlite3".to_string()
 }
 
+fn default_targets_path() -> Option<String> {
+    Some("targets.toml".to_string())
+}
+
 fn default_user_agent() -> String {
     "webwatch/0.1 (+https://example.invalid; low-frequency page monitor)".to_string()
 }
@@ -353,7 +404,9 @@ fn default_browser_wait_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, Condition, ConditionKind};
+    use std::fs;
+
+    use super::{AppConfig, Condition, ConditionKind, TargetsFile};
 
     #[test]
     fn builds_generic_target_from_url_and_conditions() {
@@ -368,16 +421,79 @@ mod tests {
             value = "Add to cart"
         "#;
 
-        let config = toml::from_str::<AppConfig>(raw)
-            .expect("parse config")
-            .resolve_env_and_validate()
+        let targets = toml::from_str::<TargetsFile>(raw)
+            .expect("parse targets")
+            .resolve_and_validate()
             .expect("valid target");
 
-        let target = &config.targets[0];
+        let target = &targets.targets[0];
         assert_eq!(target.url, "https://example.com/product");
         assert_eq!(target.conditions[0].id.as_deref(), Some("condition-1"));
         assert_eq!(target.conditions[0].kind, ConditionKind::Text);
         assert!(!target.conditions[0].negate);
+    }
+
+    #[test]
+    fn loads_split_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("config.toml"),
+            r#"
+                sqlite_path = "webwatch.sqlite3"
+                targets_path = "targets.toml"
+            "#,
+        )
+        .expect("write config");
+        fs::write(
+            dir.path().join("targets.toml"),
+            r#"
+                [[targets]]
+                id = "campfire"
+                name = "Campfire Mug"
+                url = "https://example.com/product"
+
+                [[targets.conditions]]
+                kind = "text_appears"
+                value = "Add to cart"
+            "#,
+        )
+        .expect("write targets");
+
+        let (config, targets) =
+            AppConfig::load(dir.path().join("config.toml").to_str().unwrap()).expect("load");
+
+        assert_eq!(config.targets_path.as_deref(), Some("targets.toml"));
+        assert_eq!(targets.targets[0].id, "campfire");
+    }
+
+    #[test]
+    fn targets_path_resolves_relative_to_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::create_dir(dir.path().join("subdir")).expect("mkdir");
+        fs::write(
+            dir.path().join("config.toml"),
+            r#"targets_path = "subdir/targets.toml""#,
+        )
+        .expect("write config");
+        fs::write(
+            dir.path().join("subdir/targets.toml"),
+            r#"
+                [[targets]]
+                id = "campfire"
+                name = "Campfire Mug"
+                url = "https://example.com/product"
+
+                [[targets.conditions]]
+                kind = "text_appears"
+                value = "Add to cart"
+            "#,
+        )
+        .expect("write targets");
+
+        let (_, targets) =
+            AppConfig::load(dir.path().join("config.toml").to_str().unwrap()).expect("load");
+
+        assert_eq!(targets.targets[0].id, "campfire");
     }
 
     #[test]

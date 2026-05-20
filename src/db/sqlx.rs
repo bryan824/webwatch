@@ -75,6 +75,38 @@ impl Persistence for SqlxPersistence {
         Ok(())
     }
 
+    async fn purge_targets_not_in(&self, targets: &[TargetConfig]) -> Result<()> {
+        let keep = targets
+            .iter()
+            .map(|target| target.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let remove = self
+            .statuses()
+            .await?
+            .into_iter()
+            .filter(|status| !keep.contains(status.target_id.as_str()))
+            .map(|status| status.target_id)
+            .collect::<Vec<_>>();
+        for target_id in remove {
+            sqlx::query("DELETE FROM checks WHERE target_id = ?1")
+                .bind(&target_id)
+                .execute(&self.pool)
+                .await
+                .map_err(db_err)?;
+            sqlx::query("DELETE FROM target_state WHERE target_id = ?1")
+                .bind(&target_id)
+                .execute(&self.pool)
+                .await
+                .map_err(db_err)?;
+            sqlx::query("DELETE FROM targets WHERE id = ?1")
+                .bind(&target_id)
+                .execute(&self.pool)
+                .await
+                .map_err(db_err)?;
+        }
+        Ok(())
+    }
+
     async fn record_success(&self, outcome: &CheckOutcome) -> Result<bool> {
         let checked_at = outcome.checked_at.to_rfc3339();
         let was_matched = sqlx::query_scalar::<_, Option<i64>>(

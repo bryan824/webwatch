@@ -10,11 +10,17 @@ use axum::{
 use serde::Serialize;
 use tower_http::trace::TraceLayer;
 
-use crate::{config::AppConfig, config::TargetStatus, db, db::Persistence, discord, evaluator};
+use crate::{
+    config::{AppConfig, Target, TargetStatus},
+    db,
+    db::Persistence,
+    discord, evaluator,
+};
 
 #[derive(Clone)]
 pub struct HttpState {
     pub config: Arc<AppConfig>,
+    pub targets: Arc<Vec<Target>>,
     pub db: Arc<dyn Persistence>,
     pub client: reqwest::Client,
 }
@@ -90,12 +96,7 @@ async fn notify_status(State(state): State<HttpState>, headers: HeaderMap) -> im
         return response;
     }
 
-    for target in state
-        .config
-        .targets
-        .iter()
-        .filter(|target| target.enabled())
-    {
+    for target in state.targets.iter().filter(|target| target.enabled()) {
         if let Err(response) = check_target_by_id(&state, &target.id, true).await {
             return response;
         }
@@ -126,7 +127,7 @@ async fn check_target_by_id(
     id: &str,
     mark_manual_report: bool,
 ) -> Result<(), axum::response::Response> {
-    let Some(target_config) = state.config.targets.iter().find(|target| target.id == id) else {
+    let Some(target_config) = state.targets.iter().find(|target| target.id == id) else {
         return Err(not_found(id));
     };
 

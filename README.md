@@ -8,6 +8,7 @@ Users configure URLs and alert conditions. The service prefers cheap HTTP checks
 
 ```bash
 cp config.toml.example config.toml
+cp targets.toml.example targets.toml
 export DISCORD_WEBHOOK_URL='https://discord.com/api/webhooks/...'
 export WEBWATCH_API_TOKEN='choose-a-token'
 cargo run
@@ -34,7 +35,9 @@ If binding publicly, set `WEBWATCH_API_TOKEN`; protected endpoints require it. `
 curl -H "Authorization: Bearer $WEBWATCH_API_TOKEN" http://127.0.0.1:3000/targets
 ```
 
-## Conditions
+## Config
+
+`config.toml` contains service settings. `targets.toml` contains the watch list. If upgrading from an older single-file config, move every `[[targets]]` block from `config.toml` into `targets.toml`.
 
 V1 supports user-facing conditions:
 
@@ -87,6 +90,7 @@ Lightpanda is optional and runs outside the Rust app. HTTP-only targets do not r
 
 ```bash
 cp config.docker.toml.example config.docker.toml
+cp targets.toml.example targets.toml
 export DISCORD_WEBHOOK_URL='https://discord.com/api/webhooks/...'
 docker compose up --build
 ```
@@ -143,9 +147,9 @@ cargo build --no-default-features --features persistence-seaorm
 
 Enabling multiple persistence features fails at compile time.
 
-## Config
+## Target files
 
-Targets use full URLs. Keyword/search-based targets are deferred.
+Targets use full URLs. Keyword/search-based targets are deferred. Set `targets_path` in `config.toml` or `WEBWATCH_TARGETS` to use a non-default watch-list file. Relative `targets_path` values resolve relative to `config.toml`.
 
 Default scheduler: 5 minutes plus ±30 seconds jitter.
 

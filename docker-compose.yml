@@ -15,6 +15,7 @@ services:
       RUST_LOG: ${RUST_LOG:-webwatch=info,tower_http=info}
     volumes:
       - ./config.docker.toml:/app/config.toml:ro
+      - ./targets.toml:/app/targets.toml:ro
       - webwatch-data:/data
     ports:
       - "127.0.0.1:3000:3000"

@@ -24,13 +24,12 @@ async fn main() {
 async fn run() -> Result<()> {
     let config_path =
         std::env::var("WEBWATCH_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
-    let config = Arc::new(AppConfig::load(&config_path)?);
+    let (config, targets_file) = AppConfig::load(&config_path)?;
+    let targets = Arc::new(targets_file.targets);
+    let config = Arc::new(config);
     let persistence: Arc<dyn db::Persistence> = Arc::from(db::connect(&config.sqlite_path).await?);
     persistence.migrate().await?;
-
-    for target in &config.targets {
-        persistence.ensure_target(target).await?;
-    }
+    persistence.sync_targets(&targets).await?;
     info!(backend = db::backend_name(), "persistence backend selected");
 
     let client = reqwest::Client::builder()
@@ -39,10 +38,16 @@ async fn run() -> Result<()> {
         .build()
         .context(BuildHttpClientSnafu)?;
 
-    scheduler::spawn_all(config.clone(), persistence.clone(), client.clone());
+    scheduler::spawn_all(
+        config.clone(),
+        targets.clone(),
+        persistence.clone(),
+        client.clone(),
+    );
 
     let state = HttpState {
         config: config.clone(),
+        targets,
         db: persistence,
         client: client.clone(),
     };

@@ -72,30 +72,32 @@ async fn js_rendered() -> Html<&'static str> {
     )
 }
 
-fn config_for(url: String, conditions: Vec<ConditionConfig>) -> AppConfig {
-    AppConfig {
+fn config_for(url: String, conditions: Vec<ConditionConfig>) -> (AppConfig, TargetConfig) {
+    let config = AppConfig {
         sqlite_path: "webwatch.sqlite3".to_string(),
         user_agent: "webwatch-test".to_string(),
         discord_webhook_url: None,
         api_token: None,
+        targets_path: Some("targets.toml".to_string()),
         server: ServerConfig::default(),
         scheduler: SchedulerConfig::default(),
         browser: BrowserConfig::default(),
-        targets: vec![TargetConfig {
-            id: "fixture".to_string(),
-            name: "Fixture".to_string(),
-            url,
-            enabled: true,
-            interval_secs: None,
-            conditions,
-        }],
-    }
+    };
+    let target = TargetConfig {
+        id: "fixture".to_string(),
+        name: "Fixture".to_string(),
+        url,
+        enabled: true,
+        interval_secs: None,
+        conditions,
+    };
+    (config, target)
 }
 
 #[tokio::test]
 async fn http_engine_matches_text_selector_and_price_conditions() {
     let addr = spawn_fixture().await;
-    let config = config_for(
+    let (config, target_config) = config_for(
         format!("http://{addr}/static-in-stock"),
         vec![
             ConditionConfig {
@@ -126,10 +128,9 @@ async fn http_engine_matches_text_selector_and_price_conditions() {
                 price_selector: Some(".price".to_string()),
             },
         ],
-    )
-    .resolve_env_and_validate()
-    .expect("valid config");
-    let target = config.targets[0].to_target().expect("target");
+    );
+    let config = config.resolve_env().expect("valid config");
+    let target = target_config.to_target().expect("target");
     let client = reqwest::Client::new();
 
     let outcome = evaluator::check_target(&config, &client, target)
@@ -145,7 +146,7 @@ async fn http_engine_matches_text_selector_and_price_conditions() {
 #[tokio::test]
 async fn http_engine_detects_sold_out_text_disappeared_condition() {
     let addr = spawn_fixture().await;
-    let config = config_for(
+    let (config, target_config) = config_for(
         format!("http://{addr}/static-sold-out"),
         vec![ConditionConfig {
             id: Some("not-available".to_string()),
@@ -156,10 +157,9 @@ async fn http_engine_detects_sold_out_text_disappeared_condition() {
             threshold_cents: None,
             price_selector: None,
         }],
-    )
-    .resolve_env_and_validate()
-    .expect("valid config");
-    let target = config.targets[0].to_target().expect("target");
+    );
+    let config = config.resolve_env().expect("valid config");
+    let target = target_config.to_target().expect("target");
     let client = reqwest::Client::new();
 
     let outcome = evaluator::check_target(&config, &client, target)
@@ -173,7 +173,7 @@ async fn http_engine_detects_sold_out_text_disappeared_condition() {
 #[tokio::test]
 async fn js_rendered_page_requests_browser_when_http_cannot_prove_condition() {
     let addr = spawn_fixture().await;
-    let config = config_for(
+    let (config, target_config) = config_for(
         format!("http://{addr}/js-rendered"),
         vec![ConditionConfig {
             id: Some("button".to_string()),
@@ -184,10 +184,9 @@ async fn js_rendered_page_requests_browser_when_http_cannot_prove_condition() {
             threshold_cents: None,
             price_selector: None,
         }],
-    )
-    .resolve_env_and_validate()
-    .expect("valid config");
-    let target = config.targets[0].to_target().expect("target");
+    );
+    let config = config.resolve_env().expect("valid config");
+    let target = target_config.to_target().expect("target");
     let client = reqwest::Client::new();
 
     let error = evaluator::check_target(&config, &client, target)

@@ -5,13 +5,13 @@ use tracing::{error, info, warn};
 
 use crate::{config::AppConfig, config::Target, db::Persistence, discord, evaluator, Result};
 
-pub fn spawn_all(config: Arc<AppConfig>, db: Arc<dyn Persistence>, client: reqwest::Client) {
-    for target_config in config
-        .targets
-        .iter()
-        .filter(|target| target.enabled())
-        .cloned()
-    {
+pub fn spawn_all(
+    config: Arc<AppConfig>,
+    targets: Arc<Vec<Target>>,
+    db: Arc<dyn Persistence>,
+    client: reqwest::Client,
+) {
+    for target_config in targets.iter().filter(|target| target.enabled()).cloned() {
         let config = config.clone();
         let db = db.clone();
         let client = client.clone();

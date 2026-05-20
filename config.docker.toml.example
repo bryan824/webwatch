@@ -1,5 +1,6 @@
 sqlite_path = "/data/webwatch.sqlite3"
 user_agent = "webwatch/0.1 (+https://example.invalid; low-frequency page monitor)"
+targets_path = "targets.toml"
 
 [server]
 # Container listens on all interfaces; docker-compose publishes only host 127.0.0.1.
@@ -10,13 +11,7 @@ default_interval_secs = 300
 jitter_secs = 30
 http_timeout_secs = 20
 
-
-[[targets]]
-id = "campfire-mug"
-name = "Campfire Mug"
-url = "https://example.com/products/campfire-mug"
-enabled = true
-
-[[targets.conditions]]
-kind = "text_appears"
-value = "Add to cart"
+# Uncomment to evaluate JavaScript-rendered pages with Lightpanda/CDP.
+# [browser]
+# cdp_url = "ws://lightpanda:9222"
+# wait_ms = 5000
