@@ -3,7 +3,7 @@ use snafu::{ensure, OptionExt, ResultExt};
 
 use crate::{
     config::AppConfig,
-    config::{CheckOutcome, TargetStatus},
+    config::{CheckOutcome, EngineUsed, TargetStatus},
     error::{DiscordStatusSnafu, MissingDiscordWebhookSnafu, RequestSnafu, Result},
 };
 
@@ -18,14 +18,6 @@ struct DiscordEmbed {
     title: String,
     url: String,
     description: String,
-    fields: Vec<DiscordField>,
-}
-
-#[derive(Debug, Serialize)]
-struct DiscordField {
-    name: String,
-    value: String,
-    inline: bool,
 }
 
 pub async fn send_condition_alert(
@@ -33,37 +25,8 @@ pub async fn send_condition_alert(
     config: &AppConfig,
     outcome: &CheckOutcome,
 ) -> Result<()> {
-    send_message(
-        client,
-        config,
-        &DiscordMessage {
-            content: format!(
-                "{} matched its webwatch alert conditions",
-                outcome.target.name
-            ),
-            embeds: vec![DiscordEmbed {
-                title: outcome.target.name.clone(),
-                url: outcome.target.url.clone(),
-                description: evidence_text(&outcome.evidence),
-                fields: vec![
-                    DiscordField {
-                        name: "Engine".to_string(),
-                        value: format!("{:?}", outcome.engine_used),
-                        inline: true,
-                    },
-                    DiscordField {
-                        name: "Price".to_string(),
-                        value: outcome
-                            .price_cents
-                            .map(format_price)
-                            .unwrap_or_else(|| "unknown".to_string()),
-                        inline: true,
-                    },
-                ],
-            }],
-        },
-    )
-    .await
+    let message = condition_alert_message(outcome);
+    send_message(client, config, &message).await
 }
 
 pub async fn send_status_report(
@@ -75,13 +38,8 @@ pub async fn send_status_report(
         client,
         config,
         &DiscordMessage {
-            content: "webwatch status requested manually".to_string(),
-            embeds: vec![DiscordEmbed {
-                title: "webwatch status".to_string(),
-                url: "https://example.invalid".to_string(),
-                description: summary.to_string(),
-                fields: vec![],
-            }],
+            content: summary.to_string(),
+            embeds: vec![],
         },
     )
     .await
@@ -114,6 +72,39 @@ pub fn render_status_report(statuses: &[TargetStatus]) -> String {
     format!("{header}\n\n{targets}")
 }
 
+fn condition_alert_message(outcome: &CheckOutcome) -> DiscordMessage {
+    let first_evidence = outcome
+        .evidence
+        .first()
+        .map(String::as_str)
+        .unwrap_or("condition matched");
+    DiscordMessage {
+        content: format!("🚨 {} — {first_evidence}", outcome.target.name),
+        embeds: vec![DiscordEmbed {
+            title: outcome.target.name.clone(),
+            url: outcome.target.url.clone(),
+            description: condition_alert_description(outcome),
+        }],
+    }
+}
+
+fn condition_alert_description(outcome: &CheckOutcome) -> String {
+    let mut lines = outcome
+        .evidence
+        .iter()
+        .skip(1)
+        .take(5)
+        .cloned()
+        .collect::<Vec<_>>();
+    if outcome.engine_used == EngineUsed::BrowserCdp {
+        lines.push("Engine: BrowserCdp".to_string());
+    }
+    if let Some(price) = outcome.price_cents {
+        lines.push(format!("Price: {}", format_price(price)));
+    }
+    truncate(&lines.join("\n"), 1024)
+}
+
 fn render_target_status(status: &TargetStatus) -> String {
     let icon = if status.last_error.is_some() {
         "⚠️"
@@ -127,16 +118,7 @@ fn render_target_status(status: &TargetStatus) -> String {
         Some(false) => "not matched",
         None => "unknown",
     };
-    let checked = status.last_success_at.as_deref().unwrap_or("never");
-    let engine = status
-        .engine_used
-        .map(|engine| format!("{engine:?}"))
-        .unwrap_or_else(|| "unknown".to_string());
-    let price = status
-        .price_cents
-        .map(format_price)
-        .unwrap_or_else(|| "unknown".to_string());
-    let condition_summary = condition_summary(status);
+    let checked = status.last_success_at.as_deref().unwrap_or("never checked");
     let detail = status
         .last_error
         .as_deref()
@@ -144,22 +126,9 @@ fn render_target_status(status: &TargetStatus) -> String {
         .unwrap_or_else(|| first_evidence(&status.evidence));
 
     format!(
-        "{icon} **{}** — {state}\nURL: {}\nLast check: {checked}\nEngine: {engine} · Price: {price}\nConditions: {condition_summary}\n{detail}",
+        "{icon} **{}** — {state}\n{}\n{checked} · {detail}",
         status.name, status.url
     )
-}
-
-fn condition_summary(status: &TargetStatus) -> String {
-    if status.condition_results.is_empty() {
-        return "unknown".to_string();
-    }
-
-    let matched = status
-        .condition_results
-        .iter()
-        .filter(|condition| condition.matched)
-        .count();
-    format!("{matched}/{} matched", status.condition_results.len())
 }
 
 fn first_evidence(evidence: &[String]) -> String {
@@ -198,12 +167,8 @@ async fn send_message(
     Ok(())
 }
 
-fn evidence_text(evidence: &[String]) -> String {
-    if evidence.is_empty() {
-        "no evidence recorded".to_string()
-    } else {
-        evidence.join("\n")
-    }
+fn truncate(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
 }
 
 fn format_price(cents: i64) -> String {
@@ -212,11 +177,15 @@ fn format_price(cents: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::render_status_report;
-    use crate::config::{ConditionKind, ConditionResult, EngineUsed, TargetStatus};
+    use chrono::Utc;
+
+    use super::{condition_alert_message, render_status_report};
+    use crate::config::{
+        CheckOutcome, ConditionKind, ConditionResult, EngineUsed, Target, TargetStatus,
+    };
 
     #[test]
-    fn status_report_includes_counts_url_and_condition_summary() {
+    fn status_report_includes_counts_url_and_first_evidence() {
         let report = render_status_report(&[TargetStatus {
             target_id: "mug".to_string(),
             name: "Campfire Mug".to_string(),
@@ -240,8 +209,33 @@ mod tests {
         }]);
 
         assert!(report.contains("Checked 1 target(s): 1 matched, 0 error(s)."));
-        assert!(report.contains("URL: https://example.com/mug"));
-        assert!(report.contains("Conditions: 1/1 matched"));
-        assert!(report.contains("$42.50"));
+        assert!(report.contains("Campfire Mug"));
+        assert!(report.contains("https://example.com/mug"));
+        assert!(report.contains("2026-05-18T12:00:00Z · page text contains 'Add to cart'"));
+        assert!(!report.contains("Conditions:"));
+        assert!(!report.contains("Price:"));
+    }
+
+    #[test]
+    fn condition_alert_uses_target_url_as_embed_url() {
+        let message = condition_alert_message(&CheckOutcome {
+            target: Target {
+                id: "mug".to_string(),
+                name: "Campfire Mug".to_string(),
+                url: "https://example.com/mug".to_string(),
+                enabled: true,
+                interval_secs: None,
+                conditions: vec![],
+            },
+            engine_used: EngineUsed::Http,
+            matched: true,
+            checked_at: Utc::now(),
+            price_cents: None,
+            evidence: vec!["page text contains 'Add to cart'".to_string()],
+            condition_results: vec![],
+        });
+
+        assert_eq!(message.embeds[0].url, "https://example.com/mug");
+        assert!(!message.embeds[0].url.contains("example.invalid"));
     }
 }
