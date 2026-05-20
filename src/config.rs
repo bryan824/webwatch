@@ -1,7 +1,8 @@
 use std::{env, fs, time::Duration};
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use snafu::{ensure, ResultExt};
 use url::Url;
 
@@ -70,18 +71,14 @@ pub struct Target {
 
 pub type TargetConfig = Target;
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Condition {
-    #[serde(default)]
     pub id: Option<String>,
     pub kind: ConditionKind,
-    #[serde(default)]
+    pub negate: bool,
     pub value: Option<String>,
-    #[serde(default)]
     pub selector: Option<String>,
-    #[serde(default)]
     pub threshold_cents: Option<i64>,
-    #[serde(default)]
     pub price_selector: Option<String>,
 }
 
@@ -90,15 +87,91 @@ pub type ConditionConfig = Condition;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ConditionKind {
-    TextAppears,
-    TextDisappears,
-    SelectorExists,
-    SelectorMissing,
-    SelectorTextContains,
-    SelectorTextNotContains,
-    PriceBelow,
-    PriceAbove,
-    PriceChanged,
+    Text,
+    Selector,
+    SelectorText,
+    Price,
+    PriceObserved,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConditionRaw {
+    #[serde(default)]
+    id: Option<String>,
+    kind: String,
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default)]
+    selector: Option<String>,
+    #[serde(default)]
+    threshold_cents: Option<i64>,
+    #[serde(default)]
+    price_selector: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for Condition {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = ConditionRaw::deserialize(deserializer)?;
+        let (kind, negate) = kind_from_wire(&raw.kind).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            id: raw.id,
+            kind,
+            negate,
+            value: raw.value,
+            selector: raw.selector,
+            threshold_cents: raw.threshold_cents,
+            price_selector: raw.price_selector,
+        })
+    }
+}
+
+impl Serialize for Condition {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("Condition", 7)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("kind", wire_from_kind(self.kind, self.negate))?;
+        state.serialize_field("value", &self.value)?;
+        state.serialize_field("selector", &self.selector)?;
+        state.serialize_field("threshold_cents", &self.threshold_cents)?;
+        state.serialize_field("price_selector", &self.price_selector)?;
+        state.end()
+    }
+}
+
+fn kind_from_wire(value: &str) -> std::result::Result<(ConditionKind, bool), String> {
+    match value {
+        "text_appears" => Ok((ConditionKind::Text, false)),
+        "text_disappears" => Ok((ConditionKind::Text, true)),
+        "selector_exists" => Ok((ConditionKind::Selector, false)),
+        "selector_missing" => Ok((ConditionKind::Selector, true)),
+        "selector_text_contains" => Ok((ConditionKind::SelectorText, false)),
+        "selector_text_not_contains" => Ok((ConditionKind::SelectorText, true)),
+        "price_below" => Ok((ConditionKind::Price, false)),
+        "price_above" => Ok((ConditionKind::Price, true)),
+        "price_changed" => Ok((ConditionKind::PriceObserved, false)),
+        other => Err(format!("unknown condition kind '{other}'")),
+    }
+}
+
+fn wire_from_kind(kind: ConditionKind, negate: bool) -> &'static str {
+    match (kind, negate) {
+        (ConditionKind::Text, false) => "text_appears",
+        (ConditionKind::Text, true) => "text_disappears",
+        (ConditionKind::Selector, false) => "selector_exists",
+        (ConditionKind::Selector, true) => "selector_missing",
+        (ConditionKind::SelectorText, false) => "selector_text_contains",
+        (ConditionKind::SelectorText, true) => "selector_text_not_contains",
+        (ConditionKind::Price, false) => "price_below",
+        (ConditionKind::Price, true) => "price_above",
+        (ConditionKind::PriceObserved, false) => "price_changed",
+        (ConditionKind::PriceObserved, true) => "price_changed",
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -280,7 +353,7 @@ fn default_browser_wait_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, ConditionKind};
+    use super::{AppConfig, Condition, ConditionKind};
 
     #[test]
     fn builds_generic_target_from_url_and_conditions() {
@@ -303,6 +376,49 @@ mod tests {
         let target = &config.targets[0];
         assert_eq!(target.url, "https://example.com/product");
         assert_eq!(target.conditions[0].id.as_deref(), Some("condition-1"));
-        assert_eq!(target.conditions[0].kind, ConditionKind::TextAppears);
+        assert_eq!(target.conditions[0].kind, ConditionKind::Text);
+        assert!(!target.conditions[0].negate);
+    }
+
+    #[test]
+    fn deserializes_legacy_condition_strings() {
+        let cases = [
+            ("text_appears", ConditionKind::Text, false),
+            ("text_disappears", ConditionKind::Text, true),
+            ("selector_exists", ConditionKind::Selector, false),
+            ("selector_missing", ConditionKind::Selector, true),
+            ("selector_text_contains", ConditionKind::SelectorText, false),
+            (
+                "selector_text_not_contains",
+                ConditionKind::SelectorText,
+                true,
+            ),
+            ("price_below", ConditionKind::Price, false),
+            ("price_above", ConditionKind::Price, true),
+            ("price_changed", ConditionKind::PriceObserved, false),
+        ];
+
+        for (wire, kind, negate) in cases {
+            let condition = toml::from_str::<Condition>(&format!("kind = \"{wire}\""))
+                .expect("parse condition");
+            assert_eq!(condition.kind, kind);
+            assert_eq!(condition.negate, negate);
+        }
+    }
+
+    #[test]
+    fn serializes_back_to_legacy_strings() {
+        let condition = Condition {
+            id: Some("gone".to_string()),
+            kind: ConditionKind::Text,
+            negate: true,
+            value: Some("Add to cart".to_string()),
+            selector: None,
+            threshold_cents: None,
+            price_selector: None,
+        };
+
+        let encoded = toml::to_string(&condition).expect("serialize condition");
+        assert!(encoded.contains("kind = \"text_disappears\""));
     }
 }

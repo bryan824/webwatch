@@ -100,7 +100,8 @@ async fn http_engine_matches_text_selector_and_price_conditions() {
         vec![
             ConditionConfig {
                 id: Some("text".to_string()),
-                kind: ConditionKind::TextAppears,
+                kind: ConditionKind::Text,
+                negate: false,
                 value: Some("Add to cart".to_string()),
                 selector: None,
                 threshold_cents: None,
@@ -108,7 +109,8 @@ async fn http_engine_matches_text_selector_and_price_conditions() {
             },
             ConditionConfig {
                 id: Some("button".to_string()),
-                kind: ConditionKind::SelectorExists,
+                kind: ConditionKind::Selector,
+                negate: false,
                 value: None,
                 selector: Some("button.buy".to_string()),
                 threshold_cents: None,
@@ -116,7 +118,8 @@ async fn http_engine_matches_text_selector_and_price_conditions() {
             },
             ConditionConfig {
                 id: Some("price".to_string()),
-                kind: ConditionKind::PriceBelow,
+                kind: ConditionKind::Price,
+                negate: false,
                 value: None,
                 selector: None,
                 threshold_cents: Some(5_000),
@@ -146,7 +149,8 @@ async fn http_engine_detects_sold_out_text_disappeared_condition() {
         format!("http://{addr}/static-sold-out"),
         vec![ConditionConfig {
             id: Some("not-available".to_string()),
-            kind: ConditionKind::TextDisappears,
+            kind: ConditionKind::Text,
+            negate: true,
             value: Some("Add to cart".to_string()),
             selector: None,
             threshold_cents: None,
@@ -173,7 +177,8 @@ async fn js_rendered_page_requests_browser_when_http_cannot_prove_condition() {
         format!("http://{addr}/js-rendered"),
         vec![ConditionConfig {
             id: Some("button".to_string()),
-            kind: ConditionKind::SelectorExists,
+            kind: ConditionKind::Selector,
+            negate: false,
             value: None,
             selector: Some("button.buy".to_string()),
             threshold_cents: None,

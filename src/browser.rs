@@ -170,7 +170,8 @@ mod tests {
                 interval_secs: None,
                 conditions: vec![ConditionConfig {
                     id: None,
-                    kind: ConditionKind::TextAppears,
+                    kind: ConditionKind::Text,
+                    negate: false,
                     value: Some("Add to cart".to_string()),
                     selector: None,
                     threshold_cents: None,

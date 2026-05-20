@@ -227,7 +227,7 @@ mod tests {
             evidence: vec!["page text contains 'Add to cart'".to_string()],
             condition_results: vec![ConditionResult {
                 condition_id: "stock".to_string(),
-                kind: ConditionKind::TextAppears,
+                kind: ConditionKind::Text,
                 matched: true,
                 evidence: vec![],
                 observed_price_cents: None,

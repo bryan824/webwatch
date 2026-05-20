@@ -14,7 +14,8 @@ fn target_config() -> TargetConfig {
         interval_secs: None,
         conditions: vec![ConditionConfig {
             id: Some("stock".to_string()),
-            kind: ConditionKind::TextAppears,
+            kind: ConditionKind::Text,
+            negate: false,
             value: Some("Add to cart".to_string()),
             selector: None,
             threshold_cents: None,

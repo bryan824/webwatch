@@ -106,40 +106,28 @@ fn evaluate_condition(
 ) -> Result<ConditionResult> {
     let mut evidence = Vec::new();
     let mut observed_price_cents = None;
-    let matched = match condition.kind {
-        ConditionKind::TextAppears => {
+    let base_matched = match condition.kind {
+        ConditionKind::Text => {
             let value = required_value(condition)?;
             let found = contains_case_insensitive(page_text, value);
             if found {
                 evidence.push(format!("page text contains '{value}'"));
+            } else if condition.negate {
+                evidence.push(format!("page text does not contain '{value}'"));
             }
             found
         }
-        ConditionKind::TextDisappears => {
-            let value = required_value(condition)?;
-            let missing = !contains_case_insensitive(page_text, value);
-            if missing {
-                evidence.push(format!("page text does not contain '{value}'"));
-            }
-            missing
-        }
-        ConditionKind::SelectorExists => {
+        ConditionKind::Selector => {
             let selector = required_selector(condition)?;
             let count = select_texts(document, selector)?.len();
             if count > 0 {
                 evidence.push(format!("selector '{selector}' matched {count} element(s)"));
+            } else if condition.negate {
+                evidence.push(format!("selector '{selector}' did not match"));
             }
             count > 0
         }
-        ConditionKind::SelectorMissing => {
-            let selector = required_selector(condition)?;
-            let count = select_texts(document, selector)?.len();
-            if count == 0 {
-                evidence.push(format!("selector '{selector}' did not match"));
-            }
-            count == 0
-        }
-        ConditionKind::SelectorTextContains => {
+        ConditionKind::SelectorText => {
             let selector = required_selector(condition)?;
             let value = required_value(condition)?;
             let texts = select_texts(document, selector)?;
@@ -152,54 +140,38 @@ fn evaluate_condition(
                 ));
                 true
             } else {
+                if condition.negate {
+                    evidence.push(format!(
+                        "selector '{selector}' text does not contain '{value}'"
+                    ));
+                }
                 false
             }
         }
-        ConditionKind::SelectorTextNotContains => {
-            let selector = required_selector(condition)?;
-            let value = required_value(condition)?;
-            let texts = select_texts(document, selector)?;
-            let matched = !texts
-                .iter()
-                .any(|text| contains_case_insensitive(text, value));
-            if matched {
-                evidence.push(format!(
-                    "selector '{selector}' text does not contain '{value}'"
-                ));
-            }
-            matched
-        }
-        ConditionKind::PriceBelow => {
+        ConditionKind::Price => {
             let threshold = required_threshold(condition)?;
             observed_price_cents = extract_price_cents(document, page_text, condition)?;
-            let matched = observed_price_cents
+            let below = observed_price_cents
                 .map(|price| price < threshold)
                 .unwrap_or(false);
             if let Some(price) = observed_price_cents {
-                evidence.push(format!(
-                    "observed price {} is below {}",
-                    money(price),
-                    money(threshold)
-                ));
+                if condition.negate {
+                    evidence.push(format!(
+                        "observed price {} is above {}",
+                        money(price),
+                        money(threshold)
+                    ));
+                } else {
+                    evidence.push(format!(
+                        "observed price {} is below {}",
+                        money(price),
+                        money(threshold)
+                    ));
+                }
             }
-            matched
+            below
         }
-        ConditionKind::PriceAbove => {
-            let threshold = required_threshold(condition)?;
-            observed_price_cents = extract_price_cents(document, page_text, condition)?;
-            let matched = observed_price_cents
-                .map(|price| price > threshold)
-                .unwrap_or(false);
-            if let Some(price) = observed_price_cents {
-                evidence.push(format!(
-                    "observed price {} is above {}",
-                    money(price),
-                    money(threshold)
-                ));
-            }
-            matched
-        }
-        ConditionKind::PriceChanged => {
+        ConditionKind::PriceObserved => {
             observed_price_cents = extract_price_cents(document, page_text, condition)?;
             let matched = observed_price_cents.is_some();
             if let Some(price) = observed_price_cents {
@@ -207,6 +179,11 @@ fn evaluate_condition(
             }
             matched
         }
+    };
+    let matched = if condition.negate {
+        !base_matched
+    } else {
+        base_matched
     };
 
     if evidence.is_empty() && body.is_empty() {
@@ -325,15 +302,15 @@ fn should_try_browser(
     if result.matched || !looks_js_rendered {
         return false;
     }
-    matches!(
-        condition.kind,
-        ConditionKind::TextAppears
-            | ConditionKind::SelectorExists
-            | ConditionKind::SelectorTextContains
-            | ConditionKind::PriceBelow
-            | ConditionKind::PriceAbove
-            | ConditionKind::PriceChanged
-    )
+    !condition.negate
+        && matches!(
+            condition.kind,
+            ConditionKind::Text
+                | ConditionKind::Selector
+                | ConditionKind::SelectorText
+                | ConditionKind::Price
+                | ConditionKind::PriceObserved
+        )
 }
 
 fn money(cents: i64) -> String {
@@ -366,7 +343,8 @@ mod tests {
     fn evaluates_selector_text_condition() {
         let condition = Condition {
             id: Some("stock".to_string()),
-            kind: ConditionKind::SelectorTextContains,
+            kind: ConditionKind::SelectorText,
+            negate: false,
             value: Some("Add to cart".to_string()),
             selector: Some("button".to_string()),
             threshold_cents: None,
@@ -381,5 +359,30 @@ mod tests {
 
         assert!(outcome.matched);
         assert_eq!(outcome.engine_used, EngineUsed::Http);
+    }
+
+    #[test]
+    fn negates_text_condition() {
+        let condition = Condition {
+            id: Some("gone".to_string()),
+            kind: ConditionKind::Text,
+            negate: true,
+            value: Some("Add to cart".to_string()),
+            selector: None,
+            threshold_cents: None,
+            price_selector: None,
+        };
+        let outcome = evaluate_document(
+            target(condition),
+            EngineUsed::Http,
+            "<html><body>Sold out</body></html>",
+        )
+        .expect("evaluate");
+
+        assert!(outcome.matched);
+        assert_eq!(
+            outcome.evidence[0],
+            "page text does not contain 'Add to cart'"
+        );
     }
 }
