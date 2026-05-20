@@ -266,12 +266,13 @@ Each phase is one commit, independently verifiable.
 5. **Error enum group + scheduler retry removed.** Collapse 5 browser variants into one, delete `check_with_retry`. Full matrix passes.
 6. **Config example consolidation.** Delete two example files, write the unified one, update README. No code change; `cargo build` only.
 7. **Split targets into `targets.toml` + add startup purge.** See §14. Operator-visible migration; README documents the one-time move.
+8. **Hot reload of `targets.toml` via `POST /targets/reload`.** See §15. Adds one route, one struct, no behavior change for the operator who doesn't call it.
 
-Total: 7 commits, each safely revertable, each preserving the operator-facing contract.
+Total: 8 commits, each safely revertable, each preserving the operator-facing contract.
 
 ## §12. What this changes for each user
 
-- **Operator:** service knobs live in `config.toml`, watch list lives in `targets.toml` — edit the file that matches what you're changing. One config example each, terser README on the JS-rendered path. Removing a target now actually removes it (no orphan SQLite rows). Logs become linear (one tick → one outcome).
+- **Operator:** service knobs live in `config.toml`, watch list lives in `targets.toml` — edit the file that matches what you're changing. Edit `targets.toml` and `curl -X POST /targets/reload` to pick up changes live; `config.toml` changes still require a restart. One config example each, terser README on the JS-rendered path. Removing a target now actually removes it (no orphan SQLite rows). Logs become linear (one tick → one outcome).
 - **Discord recipient:** alerts have a clickable real URL on the embed, no `example.invalid` placeholder, status reports lose the `Engine` / `Price` / `Conditions: 1/1 matched` clutter, one block per target.
 - **Maintainer:** `db.rs` is four readable files instead of one 726-line file; one model layer instead of two; evaluator dispatch is half as wide; the error enum has one browser variant instead of five; targets have a single source of truth (`targets.toml` → DB).
 
@@ -284,6 +285,9 @@ Total: 7 commits, each safely revertable, each preserving the operator-facing co
 - Rewriting the CDP client — works as-is.
 - Adding new condition kinds or new alert channels.
 - Adding `POST /targets` / `DELETE /targets/:id` endpoints — see §14, rejected option B.
+- Hot-reloading `config.toml`. Only `targets.toml` is hot-reloadable; see §15.
+- File-watcher-based reload (`notify` crate). See §15 rejected alternatives.
+- `SIGHUP`-based reload. See §15 rejected alternatives.
 - Any change to `Cargo.toml` beyond what the `src/` move requires (nothing expected).
 
 ## §14. Split config: `config.toml` + `targets.toml`
@@ -386,3 +390,143 @@ volumes:
 
 - *B. DB-as-source-of-truth + `POST/DELETE /targets`.* Cleanest model, but expands the HTTP API surface and requires either an admin-only auth tier or expanded use of the existing bearer token. Not worth the complexity for a homelab tool with file-based config that's already in git.
 - *C. Keep one file, add purge only.* Smallest change, fixes the orphan bug, but doesn't address the "scroll past infra to find targets" UX issue.
+
+## §15. Hot reload of `targets.toml`
+
+**Decision.** Hot reload `targets.toml` only. `config.toml` changes require a process restart. One trigger: `POST /targets/reload`, bearer-required (same token as `POST /notify/status`).
+
+**Why not hot-reload `config.toml`.** Some of its keys can't be reloaded live: `[server] bind` is bound to a TCP socket at startup; `sqlite_path` owns the connection pool. Reloading "only the safe keys" would force the operator to memorize which knobs are honored live and which silently aren't — strictly worse UX than the clear rule "watch list = live; service config = restart." This matches the static/dynamic split that nginx, Prometheus, and HAProxy use.
+
+**Endpoint.**
+
+```
+POST /targets/reload
+Authorization: Bearer $WEBWATCH_API_TOKEN
+```
+
+Response 200:
+
+```json
+{
+  "added":     ["new-target-id"],
+  "removed":   ["old-target-id"],
+  "changed":   ["edited-target-id"],
+  "unchanged": ["stable-target-id-1", "stable-target-id-2"]
+}
+```
+
+Failure modes:
+- 401 if bearer is missing/invalid.
+- 400 if `targets.toml` parse or validation fails; body carries the error message. Current scheduler state is **not** touched.
+- 500 if DB sync fails after parse succeeded; current scheduler state is rolled back to pre-reload (see "Atomicity" below).
+
+**Scheduler refactor.** Today, `scheduler::spawn_all` is fire-and-forget. To support reload, introduce a `Scheduler` struct that owns the running tasks:
+
+```rust
+pub struct Scheduler {
+    inner: Arc<Mutex<SchedulerInner>>,
+    config: Arc<AppConfig>,
+    db: Arc<dyn Persistence>,
+    client: reqwest::Client,
+}
+
+struct SchedulerInner {
+    tasks: HashMap<String, RunningTarget>,  // keyed by target.id
+}
+
+// SchedulerInner is guarded by tokio::sync::Mutex (not std::sync::Mutex)
+// because reload holds the lock across an `.await` on sync_targets.
+
+struct RunningTarget {
+    target: Target,                         // snapshot used to detect changes
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Scheduler {
+    pub fn new(config, db, client) -> Self;
+    pub fn start(&self, targets: &[Target]);            // initial spawn (replaces spawn_all)
+    pub async fn reload(&self, targets: &[Target]) -> ReloadReport;
+    pub fn current_targets(&self) -> Vec<Target>;       // for notify_status / /targets
+    pub fn target(&self, id: &str) -> Option<Target>;
+}
+```
+
+`reload` does, under the mutex:
+
+1. Diff `targets` (new) against `inner.tasks` (current) by `id`.
+2. For IDs present only in old: `handle.abort()`, remove entry, mark removed.
+3. For IDs present only in new (and `enabled == true`): spawn task, insert entry, mark added.
+4. For IDs in both: if `Target` is structurally equal, mark unchanged; otherwise abort + respawn, mark changed.
+5. Disabled targets (`enabled == false`) are excluded from the running set in both old and new — flipping `enabled` is treated as add/remove.
+
+**HttpState change (amends §14).** Instead of `HttpState.targets: Arc<Vec<Target>>`, use:
+
+```rust
+pub struct HttpState {
+    pub config: Arc<AppConfig>,
+    pub scheduler: Arc<Scheduler>,
+    pub db: Arc<dyn Persistence>,
+    pub client: reqwest::Client,
+}
+```
+
+`notify_status` calls `state.scheduler.current_targets()` and iterates. `targets` (GET) keeps reading from DB (unchanged behavior).
+
+**Atomicity.** `reload` builds the full plan (added/removed/changed lists) before touching any task. If `persistence.sync_targets(&new_targets)` fails, the scheduler reverts: nothing has been aborted yet, so nothing to undo on the scheduler side; the in-memory `SchedulerInner` is only updated after the DB sync succeeds.
+
+Order of operations:
+
+1. Parse `targets.toml` from disk → `Vec<Target>`.
+2. Validate (existing `Condition` field checks).
+3. Compute diff against `inner.tasks` (mutex held).
+4. `persistence.sync_targets(&new_targets)` (mutex still held — DB write is fast).
+5. Apply diff to `inner.tasks` (abort + spawn).
+6. Release mutex, return `ReloadReport`.
+
+The mutex is held across the await on `sync_targets`. This serializes concurrent reload requests (the second one blocks until the first completes) which is the desired semantics.
+
+**In-flight checks.** Aborting a target's `JoinHandle` cancels its current tokio future. If a target was mid-HTTP-request, `reqwest` cancels cleanly. No DB rows are corrupted because the in-flight check writes to DB only on completion via `record_success` or `record_error`. A cancelled mid-check leaves no trace beyond a debug log.
+
+**Logging.**
+
+```
+INFO  scheduler reload added=["new-id"] removed=["old-id"] changed=[] unchanged=["a","b"]
+WARN  scheduler reload failed: parse targets.toml: ...
+```
+
+**README addition.**
+
+```
+## Reloading the watch list
+
+Edit `targets.toml`, then:
+
+    curl -X POST -H "Authorization: Bearer $WEBWATCH_API_TOKEN" \
+         http://127.0.0.1:3000/targets/reload
+
+Changes to `config.toml` require a process restart.
+```
+
+**Tests.**
+
+- `tests/reload.rs` integration:
+  - Start service with two enabled targets A and B (write a fresh `targets.toml` to tempdir).
+  - `POST /targets/reload` with same content → 200 with `unchanged=["A","B"]`, `added=[]`, `removed=[]`, `changed=[]`.
+  - Overwrite `targets.toml` with A and C (B removed, C added) and reload → 200 with `added=["C"]`, `removed=["B"]`, etc. Assert `/targets` returns A and C only.
+  - Edit A's condition value, reload → `changed=["A"]`. Assert DB row for A reflects new condition.
+- `tests/reload.rs` parse failure:
+  - Write malformed `targets.toml`, reload → 400, response body contains the parse error, `/targets` still returns the pre-reload set.
+- `tests/reload.rs` auth:
+  - Reload without bearer → 401.
+
+**Rejected alternatives.**
+
+- **`SIGHUP`-based reload.** POSIX-standard, but Docker/systemd users have to know to send it. Less discoverable than an HTTP endpoint, and the existing service already exposes a bearer-protected API surface — adding a signal handler is more code for worse UX in this deployment.
+- **File-watcher-based reload (`notify` crate).** "Magical" in the good case but adds a dependency, requires debounce logic (editors do rename-and-rewrite which fires multiple events), and silently failing on parse errors is worse than an explicit 400 from the API. Also adds a watchdog task to keep alive across the service lifetime.
+- **Reloading select keys of `config.toml`.** Documented above — "some keys are hot" semantics are strictly worse than "no keys are hot."
+
+**Out of scope for §15.**
+
+- `DELETE /targets/:id` / `POST /targets` (mutating endpoints that bypass the file). Rejected in §14 option B.
+- Per-target reload (`POST /targets/:id/reload`). The whole-file reload covers the operator use case and is simpler.
+- Live reload of `[scheduler]` interval/jitter for already-running tasks. A respawn-via-`changed` covers this if the operator also edits an unrelated field on the target; otherwise, restart.
