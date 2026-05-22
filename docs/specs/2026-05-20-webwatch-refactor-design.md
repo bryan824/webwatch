@@ -1,23 +1,48 @@
-# webwatch refactor — "less is more"
+# Webwatch refactor design — less is more
 
 Date: 2026-05-20
 Status: design, not yet implemented
-Approach: tighten in place. No feature removal, no config migration, no API break.
 
-## Goals
+## Purpose
+
+Refactor webwatch so the codebase is easier to read and change without dropping behavior that is already in use. The design tightens existing boundaries in place rather than introducing a new architecture.
+
+## Success criteria
 
 - Cut redundant surface area without dropping any feature in use.
 - Make every layer obvious on first read.
-- Keep behavior identical: same TOML configs work, same `/health` `/targets` `/notify/status` shapes, same SQLite schema (`PRAGMA user_version = 1`), same Discord webhook contract, same `--features persistence-{diesel,sqlx,seaorm}` matrix.
+- Preserve current operator behavior unless explicitly called out below.
+- Keep the public HTTP shapes for `/health`, `/targets`, and `/notify/status`.
+- Keep the SQLite schema at `PRAGMA user_version = 1` except for target synchronization behavior that does not require a schema migration.
+- Keep the Discord webhook contract and the `--features persistence-{diesel,sqlx,seaorm}` matrix.
 
-## Non-goals
+## Scope
 
-- No new features.
-- No condition vocabulary added or removed.
-- No new dependencies.
-- No project rename.
-- No CDP browser code changes.
-- One operator-visible migration is in scope: splitting `config.toml`'s `[[targets]]` blocks into a separate `targets.toml`. See §14.
+In scope:
+
+- Collapse duplicate model layers.
+- Split persistence backends into focused modules.
+- Simplify condition evaluation, Discord rendering, browser errors, and scheduler retry behavior.
+- Consolidate config examples.
+- Split `config.toml` and `targets.toml`, then support explicit target reloads.
+
+Out of scope:
+
+- New monitoring features or alert channels.
+- New condition vocabulary.
+- New dependencies outside the hot-reload decision already documented below.
+- Project rename.
+- CDP browser protocol rewrite.
+
+## Recommended approach
+
+Tighten in place. Preserve current feature boundaries and public contracts, but remove duplicate representations and overly broad modules. The only operator-visible migration is splitting `config.toml`'s `[[targets]]` blocks into `targets.toml`; that migration pays for itself by fixing orphan target rows and making watch-list edits reloadable.
+
+## Alternatives considered
+
+1. **Tighten in place (selected).** Lowest operational risk; keeps behavior stable while reducing code volume and mental overhead.
+2. **Rewrite around a new architecture.** Could produce cleaner seams, but is too much churn for a small homelab service and risks breaking persistence/backend feature parity.
+3. **Only move files, no behavior cleanup.** Lower immediate risk, but leaves the duplicate model layer, noisy Discord output, and target source-of-truth problem intact.
 
 ## Headline targets
 
@@ -27,12 +52,14 @@ Approach: tighten in place. No feature removal, no config migration, no API brea
 | `db.rs` LOC | 726 | 4 files × ~150 |
 | Config examples | 3 | 1 service + 1 targets (+ docker) |
 | Condition match-arms in `evaluator.rs` | 9 | 5 + a `negate` flag |
-| `Error` enum variants | 26 | 23 (§5 collapses 5→1, §14 adds 1) |
+| `Error` enum variants | 26 | 23 (D5 collapses 5→1, the split-config design adds 1) |
 | Model layers for targets/conditions | 2 (wire + domain) | 1 |
 | Discord embed fields in alert | 2 | 0 |
 | Orphan target rows after deleting from TOML | possible | impossible (purge on load) |
 
-## Module layout
+## Design overview
+
+### Module layout
 
 ```
 src/
@@ -56,7 +83,9 @@ src/
 
 `src/models.rs` is deleted. Its types move into `config.rs`.
 
-## §1. Single model layer
+## Design decisions
+
+### D1. Single model layer
 
 `TargetConfig` ↔ `Target` and `ConditionConfig` ↔ `Condition` collapse:
 
@@ -74,7 +103,7 @@ pub struct Target {
     pub conditions: Vec<Condition>,
 }
 
-// Condition does NOT derive Deserialize/Serialize. See §2 for the manual
+// Condition does NOT derive Deserialize/Serialize. See D2 for the manual
 // impls that map legacy 9-string `kind` values to (ConditionKind, negate).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Condition {
@@ -92,7 +121,7 @@ pub struct Condition {
 
 `Target::from_config` and its tests go away. `models.rs` is deleted.
 
-## §2. Conditions: 5 kinds + negate
+### D2. Conditions: 5 kinds + negate
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,7 +156,7 @@ Backward compatibility for TOML, HTTP, and stored JSON uses a manual `impl Deser
 
 The `should_try_browser` table compresses to one line: `matches!(kind, Text | Selector | SelectorText | Price | PriceObserved)` — the browser fallback is allowed on any positive (non-negated) miss when the page looks JS-shell. Negative conditions don't trigger browser fallback (current behavior preserved).
 
-## §3. `db.rs` split
+### D3. `db.rs` split
 
 `src/db/mod.rs` holds, once:
 
@@ -149,7 +178,7 @@ Backend files reference the shared constants by `use super::{SCHEMA_VERSION, CRE
 
 Target sizes: `mod.rs` ~180 lines, `diesel.rs` ~200 lines, `sqlx.rs` ~140 lines, `seaorm.rs` ~160 lines.
 
-## §4. Discord output
+### D4. Discord output
 
 `send_condition_alert`:
 
@@ -171,7 +200,7 @@ Target sizes: `mod.rs` ~180 lines, `diesel.rs` ~200 lines, `sqlx.rs` ~140 lines,
 
 Target: `discord.rs` from 247 → ~120 lines. Existing test `status_report_includes_counts_url_and_condition_summary` is updated to match the new block format; the new format still contains the URL and the matched/total counts header, so the assertion intent is preserved.
 
-## §5. Error enum
+### D5. Error enum
 
 Replace these five variants:
 
@@ -190,13 +219,13 @@ Browser { stage: &'static str, message: String },
 
 Call-sites pass `stage = "connect" | "send" | "read" | "protocol" | "response_missing"` and pack url/method/field into `message`. Net: 26 → 22 variants, and `browser.rs` simplifies its error mapping closures.
 
-## §6. Scheduler retry
+### D6. Scheduler retry
 
 `check_with_retry` is removed. `scheduler::run_once` calls `evaluator::check_target` once; failures go straight to `db.record_error` and the next tick is scheduled normally (5 min ±30 s).
 
 Rationale: a 5-second in-tick retry doesn't meaningfully recover transient HTTP errors at low-frequency polling, and removing it makes the log story linear (one tick, one outcome). Alerts only fire on transitions, so a single dropped check has no Discord effect.
 
-## §7. Config example consolidation
+### D7. Config example consolidation
 
 Delete:
 
@@ -210,18 +239,18 @@ Keep:
 
 README's "JavaScript-rendered pages" section becomes: "Uncomment the `[browser]` block in `config.toml` and run a Lightpanda container."
 
-## §8. HTTP API surface
+### D8. HTTP API surface
 
 No route changes. Internal cleanups only:
 
 - `check_target_by_id` keeps its current behavior (run a live check, record success or error, return `Result<(), Response>`). The `mark_manual_report` flag is preserved.
 - Authorization helpers (`authorize_optional`, `authorize_required`, `authorize_token`) stay; `authorize_token` is the only one that touches headers, the others just gate it. No simplification beyond what's already there.
 
-## §9. Persistence schema
+### D9. Persistence schema
 
 No schema change. `PRAGMA user_version` stays at `1`. The `conditions_json` column stores the new `Condition` shape with the `negate` field present; the legacy `kind` strings remain on the wire thanks to the custom `Serialize` impl, so existing databases continue to parse without a migration.
 
-## §10. Test plan
+## Verification plan
 
 Unit tests that stay green without change:
 
@@ -255,7 +284,7 @@ cargo clippy --no-default-features --features persistence-seaorm --all-targets -
 cargo test --no-default-features --features persistence-seaorm
 ```
 
-## §11. Phasing
+## Implementation outline
 
 Each phase is one commit, independently verifiable.
 
@@ -265,18 +294,18 @@ Each phase is one commit, independently verifiable.
 4. **Discord trim.** Rewrite `send_condition_alert` and `render_status_report`. Update existing Discord test. Full matrix passes.
 5. **Error enum group + scheduler retry removed.** Collapse 5 browser variants into one, delete `check_with_retry`. Full matrix passes.
 6. **Config example consolidation.** Delete two example files, write the unified one, update README. No code change; `cargo build` only.
-7. **Split targets into `targets.toml` + add startup purge.** See §14. Operator-visible migration; README documents the one-time move.
-8. **Hot reload of `targets.toml` via `POST /targets/reload`.** See §15. Adds one route, one struct, no behavior change for the operator who doesn't call it.
+7. **Split targets into `targets.toml` + add startup purge.** See “Operator migration design: split config and targets.” Operator-visible migration; README documents the one-time move.
+8. **Hot reload of `targets.toml` via `POST /targets/reload`.** See “Operator workflow design: hot reload targets.” Adds one route, one struct, no behavior change for the operator who doesn't call it.
 
 Total: 8 commits, each safely revertable, each preserving the operator-facing contract.
 
-## §12. What this changes for each user
+## User impact
 
 - **Operator:** service knobs live in `config.toml`, watch list lives in `targets.toml` — edit the file that matches what you're changing. Edit `targets.toml` and `curl -X POST /targets/reload` to pick up changes live; `config.toml` changes still require a restart. One config example each, terser README on the JS-rendered path. Removing a target now actually removes it (no orphan SQLite rows). Logs become linear (one tick → one outcome).
 - **Discord recipient:** alerts have a clickable real URL on the embed, no `example.invalid` placeholder, status reports lose the `Engine` / `Price` / `Conditions: 1/1 matched` clutter, one block per target.
 - **Maintainer:** `db.rs` is four readable files instead of one 726-line file; one model layer instead of two; evaluator dispatch is half as wide; the error enum has one browser variant instead of five; targets have a single source of truth (`targets.toml` → DB).
 
-## §13. Out of scope (explicitly)
+## Explicit non-goals
 
 - Dropping Cargo features for SQLx/SeaORM — kept in use.
 - Dropping the CDP browser fallback — kept in use.
@@ -284,13 +313,13 @@ Total: 8 commits, each safely revertable, each preserving the operator-facing co
 - Dropping multi-target support — kept in use.
 - Rewriting the CDP client — works as-is.
 - Adding new condition kinds or new alert channels.
-- Adding `POST /targets` / `DELETE /targets/:id` endpoints — see §14, rejected option B.
-- Hot-reloading `config.toml`. Only `targets.toml` is hot-reloadable; see §15.
-- File-watcher-based reload (`notify` crate). See §15 rejected alternatives.
-- `SIGHUP`-based reload. See §15 rejected alternatives.
+- Adding `POST /targets` / `DELETE /targets/:id` endpoints — see the split-config design, rejected option B.
+- Hot-reloading `config.toml`. Only `targets.toml` is hot-reloadable; see the target-reload design.
+- File-watcher-based reload (`notify` crate). See the target-reload design rejected alternatives.
+- `SIGHUP`-based reload. See the target-reload design rejected alternatives.
 - Any change to `Cargo.toml` beyond what the `src/` move requires (nothing expected).
 
-## §14. Split config: `config.toml` + `targets.toml`
+## Operator migration design: split config and targets
 
 **Problem.** Today's `config.toml` mixes two things with different lifecycles:
 
@@ -391,7 +420,7 @@ volumes:
 - *B. DB-as-source-of-truth + `POST/DELETE /targets`.* Cleanest model, but expands the HTTP API surface and requires either an admin-only auth tier or expanded use of the existing bearer token. Not worth the complexity for a homelab tool with file-based config that's already in git.
 - *C. Keep one file, add purge only.* Smallest change, fixes the orphan bug, but doesn't address the "scroll past infra to find targets" UX issue.
 
-## §15. Hot reload of `targets.toml`
+## Operator workflow design: hot reload targets
 
 **Decision.** Hot reload `targets.toml` only. `config.toml` changes require a process restart. One trigger: `POST /targets/reload`, bearer-required (same token as `POST /notify/status`).
 
@@ -459,7 +488,7 @@ impl Scheduler {
 4. For IDs in both: if `Target` is structurally equal, mark unchanged; otherwise abort + respawn, mark changed.
 5. Disabled targets (`enabled == false`) are excluded from the running set in both old and new — flipping `enabled` is treated as add/remove.
 
-**HttpState change (amends §14).** Instead of `HttpState.targets: Arc<Vec<Target>>`, use:
+**HttpState change (amends the split-config design).** Instead of `HttpState.targets: Arc<Vec<Target>>`, use:
 
 ```rust
 pub struct HttpState {
@@ -525,8 +554,8 @@ Changes to `config.toml` require a process restart.
 - **File-watcher-based reload (`notify` crate).** "Magical" in the good case but adds a dependency, requires debounce logic (editors do rename-and-rewrite which fires multiple events), and silently failing on parse errors is worse than an explicit 400 from the API. Also adds a watchdog task to keep alive across the service lifetime.
 - **Reloading select keys of `config.toml`.** Documented above — "some keys are hot" semantics are strictly worse than "no keys are hot."
 
-**Out of scope for §15.**
+**Out of scope for the target-reload design.**
 
-- `DELETE /targets/:id` / `POST /targets` (mutating endpoints that bypass the file). Rejected in §14 option B.
+- `DELETE /targets/:id` / `POST /targets` (mutating endpoints that bypass the file). Rejected in the split-config design option B.
 - Per-target reload (`POST /targets/:id/reload`). The whole-file reload covers the operator use case and is simpler.
 - Live reload of `[scheduler]` interval/jitter for already-running tasks. A respawn-via-`changed` covers this if the operator also edits an unrelated field on the target; otherwise, restart.
