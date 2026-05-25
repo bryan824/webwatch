@@ -9,7 +9,10 @@
   const s = $derived(deriveStatus(target));
 </script>
 
-<Badge variant="outline" class="gap-1.5">
+<Badge
+  variant="outline"
+  class="gap-1.5 border-border/70 font-mono text-[10px] font-medium uppercase tracking-[0.14em]"
+>
   <StatusDot kind={s.kind} />
   {s.label}
 </Badge>

@@ -16,18 +16,22 @@
   const errored = $derived(targets.filter((t) => deriveStatus(t).kind === 'error').length);
 </script>
 
-<div class="flex h-full flex-col gap-2 p-2">
-  <Input placeholder="Search targets…" bind:value={q} />
-  <p class="px-1 text-xs text-muted-foreground">
-    {targets.length} targets · {matched} matched · {errored} error
-  </p>
+<div class="flex h-full flex-col">
+  <div class="space-y-2 p-3">
+    <Input placeholder="search targets…" bind:value={q} class="h-8 font-mono text-xs" />
+    <p class="flex items-center gap-2 px-0.5 font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
+      <span>{targets.length} targets</span>
+      <span class="text-primary">{matched} matched</span>
+      {#if errored > 0}<span class="text-red-400">{errored} err</span>{/if}
+    </p>
+  </div>
   <ScrollArea class="flex-1">
-    <div class="flex flex-col gap-0.5">
-      {#each filtered as t (t.target_id)}
-        <TargetListItem target={t} selected={t.target_id === selectedId} />
+    <div class="flex flex-col pb-3">
+      {#each filtered as t, i (t.target_id)}
+        <TargetListItem target={t} selected={t.target_id === selectedId} index={i} />
       {/each}
       {#if filtered.length === 0}
-        <p class="px-2 py-6 text-center text-sm text-muted-foreground">No matching targets.</p>
+        <p class="px-3 py-8 text-center font-mono text-xs text-muted-foreground">no matching targets</p>
       {/if}
     </div>
   </ScrollArea>

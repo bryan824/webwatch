@@ -1,7 +1,6 @@
 <!-- web/src/lib/components/TargetDetail.svelte -->
 <script lang="ts">
   import { Button } from '$lib/components/ui/button';
-  import { Separator } from '$lib/components/ui/separator';
   import StatusBadge from './StatusBadge.svelte';
   import ConditionResultRow from './ConditionResultRow.svelte';
   import { deriveStatus } from '$lib/status';
@@ -10,46 +9,76 @@
 
   let { target, checking, onCheckNow }:
     { target: TargetStatus; checking: boolean; onCheckNow: () => void } = $props();
+
   const s = $derived(deriveStatus(target));
+  const meta = $derived<[string, string][]>([
+    ['engine', target.engine_used ?? '—'],
+    ['price', formatPrice(target.price_cents)],
+    ['last success', formatRelative(target.last_success_at)],
+    ['last alert', formatRelative(target.last_alert_at)]
+  ]);
 </script>
 
-<div class="flex h-full flex-col gap-4 p-4">
+<div class="mx-auto flex h-full max-w-3xl animate-in flex-col gap-6 p-6 fade-in duration-300">
   <div class="flex items-start justify-between gap-4">
     <div class="min-w-0">
-      <h1 class="truncate text-xl font-semibold">{target.name}</h1>
-      <a href={target.url} target="_blank" rel="noreferrer" class="truncate text-sm text-muted-foreground underline">{target.url}</a>
+      <h1 class="truncate font-mono text-xl font-semibold tracking-tight">{target.name}</h1>
+      <a
+        href={target.url}
+        target="_blank"
+        rel="noreferrer"
+        class="mt-1 inline-block max-w-full truncate font-mono text-xs text-muted-foreground hover:text-primary"
+      >
+        {target.url} ↗
+      </a>
     </div>
-    <Button onclick={onCheckNow} disabled={checking}>{checking ? 'Checking…' : 'Check now'}</Button>
+    <Button class="font-mono text-xs" onclick={onCheckNow} disabled={checking}>
+      {checking ? 'checking…' : 'check now'}
+    </Button>
   </div>
 
-  <div class="flex flex-wrap items-center gap-4 text-sm">
-    <StatusBadge {target} />
-    <span class="text-muted-foreground">engine: <span class="text-foreground">{target.engine_used ?? '—'}</span></span>
-    <span class="text-muted-foreground">price: <span class="text-foreground">{formatPrice(target.price_cents)}</span></span>
-    <span class="text-muted-foreground">last success: <span class="text-foreground">{formatRelative(target.last_success_at)}</span></span>
-    <span class="text-muted-foreground">last alert: <span class="text-foreground">{formatRelative(target.last_alert_at)}</span></span>
-  </div>
+  <StatusBadge {target} />
 
   {#if s.kind === 'error' && target.last_error}
-    <div class="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950/40">
-      {target.last_error} <span class="text-xs opacity-70">({formatRelative(target.last_error_at)})</span>
+    <div class="rounded-md border border-red-500/30 bg-red-500/10 p-3 font-mono text-xs text-red-300">
+      {target.last_error}
+      <span class="opacity-60"> · {formatRelative(target.last_error_at)}</span>
     </div>
   {/if}
 
   {#if s.kind === 'unknown' && target.condition_results.length === 0}
-    <p class="text-sm text-muted-foreground">Not checked yet. Click <strong>Check now</strong> to evaluate this target.</p>
+    <p class="font-mono text-sm text-muted-foreground">
+      not checked yet — click <span class="text-primary">check now</span> to evaluate this target.
+    </p>
   {:else}
-    <Separator />
+    <div class="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-border/70 bg-border/70 sm:grid-cols-4">
+      {#each meta as [label, value]}
+        <div class="bg-card p-3">
+          <div class="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
+          <div class="mt-1 truncate font-mono text-sm">{value}</div>
+        </div>
+      {/each}
+    </div>
+
     <section>
-      <h2 class="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Evidence</h2>
+      <h2 class="mb-2 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Evidence</h2>
       {#if target.evidence.length}
-        {#each target.evidence as e}<p class="text-sm">{e}</p>{/each}
-      {:else}<p class="text-sm text-muted-foreground">No evidence.</p>{/if}
+        <div class="space-y-1 rounded-md border border-border/70 bg-card/50 p-3">
+          {#each target.evidence as e}<p class="break-words font-mono text-xs text-foreground/90">{e}</p>{/each}
+        </div>
+      {:else}
+        <p class="font-mono text-xs text-muted-foreground">no evidence</p>
+      {/if}
     </section>
+
     <section>
-      <h2 class="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Conditions</h2>
-      {#each target.condition_results as c (c.condition_id)}<ConditionResultRow {c} />{/each}
-      {#if target.condition_results.length === 0}<p class="text-sm text-muted-foreground">No condition results.</p>{/if}
+      <h2 class="mb-1 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Conditions</h2>
+      <div class="divide-y divide-border/60">
+        {#each target.condition_results as c (c.condition_id)}<ConditionResultRow {c} />{/each}
+      </div>
+      {#if target.condition_results.length === 0}
+        <p class="font-mono text-xs text-muted-foreground">no condition results</p>
+      {/if}
     </section>
   {/if}
 </div>

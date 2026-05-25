@@ -25,20 +25,36 @@
   });
 </script>
 
-<div class="flex h-screen flex-col">
+<div class="instrument-grid flex h-screen flex-col bg-background">
   <Toolbar onOpenToken={() => (tokenOpen = true)} {updatedLabel} />
-  <div class="grid flex-1 grid-cols-[320px_1fr] overflow-hidden">
-    <aside class="overflow-hidden border-r">
+  <div class="grid flex-1 grid-cols-[300px_1fr] overflow-hidden">
+    <aside class="overflow-hidden border-r border-border/70 bg-card/30">
       {#if targets.isPending}
-        <div class="space-y-2 p-3">{#each Array.from({ length: 4 }) as _}<Skeleton class="h-10 w-full" />{/each}</div>
+        <div class="space-y-2 p-3">
+          {#each Array.from({ length: 5 }) as _}<Skeleton class="h-11 w-full" />{/each}
+        </div>
       {:else if targets.error}
-        <div class="p-4 text-sm">
-          <p class="text-red-600">{(targets.error as Error).message}</p>
-          <button class="mt-2 underline" onclick={() => targets.refetch()}>Retry</button>
-          {#if !$hasToken}<button class="mt-2 block underline" onclick={() => (tokenOpen = true)}>Enter API token</button>{/if}
+        <div class="p-4">
+          <p class="break-words font-mono text-xs text-red-400">{(targets.error as Error).message}</p>
+          <button
+            class="mt-3 font-mono text-xs text-primary underline-offset-2 hover:underline"
+            onclick={() => targets.refetch()}
+          >
+            retry
+          </button>
+          {#if !$hasToken}
+            <button
+              class="mt-2 block font-mono text-xs text-primary underline-offset-2 hover:underline"
+              onclick={() => (tokenOpen = true)}
+            >
+              enter API token
+            </button>
+          {/if}
         </div>
       {:else if (targets.data ?? []).length === 0}
-        <p class="p-4 text-sm text-muted-foreground">No targets. Edit <code>targets.toml</code> then Reload.</p>
+        <p class="p-4 font-mono text-xs text-muted-foreground">
+          no targets — edit <code>targets.toml</code> then reload.
+        </p>
       {:else}
         <TargetList targets={targets.data ?? []} {selectedId} />
       {/if}
