@@ -43,6 +43,28 @@ If binding publicly, set `WEBWATCH_API_TOKEN`; protected endpoints require it. `
 curl -H "Authorization: Bearer $WEBWATCH_API_TOKEN" http://127.0.0.1:3000/targets
 ```
 
+## Web UI
+
+A SvelteKit dashboard (in `web/`) lists every target with its latest status, evidence, conditions, and errors, and can trigger the existing actions: re-check a target, reload `targets.toml`, and send a Discord report.
+
+Development (two processes — the Vite dev server proxies the API):
+
+```bash
+WEBWATCH_API_TOKEN=dev cargo run            # terminal 1: API on :3000
+cd web && npm install && npm run dev        # terminal 2: UI on :5173
+```
+
+Open http://localhost:5173, click the gear, and paste your `WEBWATCH_API_TOKEN` (stored in the browser).
+
+Production (single binary): the built SPA is embedded into the server via `rust-embed`, so build the frontend before the release binary:
+
+```bash
+cd web && npm run build && cd ..
+cargo build --release
+```
+
+The UI is then served same-origin at http://127.0.0.1:3000/. The API owns `/targets`, so opening that bare URL returns JSON — the app itself lives at `/` and `/targets/<id>`. (The Docker image builds and embeds the UI automatically.)
+
 ## Config
 
 `config.toml` contains service settings. `targets.toml` contains the watch list. If upgrading from an older single-file config, move every `[[targets]]` block from `config.toml` into `targets.toml`.

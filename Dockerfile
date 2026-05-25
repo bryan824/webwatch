@@ -1,7 +1,17 @@
+# ---- frontend build ----
+FROM node:22-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+# ---- rust build (embeds web/build via rust-embed) ----
 FROM rust:1-bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY --from=web /web/build ./web/build
 RUN cargo build --release
 
 FROM debian:bookworm-slim

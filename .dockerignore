@@ -3,6 +3,9 @@
 .pi
 .rpiv
 target
+web/node_modules
+web/build
+web/.svelte-kit
 webwatch.sqlite3
 config.toml
 config.docker.toml
