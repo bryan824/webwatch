@@ -28,7 +28,7 @@ describe('apiFetch', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ error: 'nope' }), { status: 401, headers: { 'content-type': 'application/json' } })
     );
-    const err = await apiFetch('/targets').catch((e) => e);
+    const err = await apiFetch('/targets').catch((e: unknown) => e) as ApiError;
     expect(err).toBeInstanceOf(ApiError);
     expect(err.status).toBe(401);
   });
