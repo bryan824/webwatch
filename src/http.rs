@@ -1,14 +1,44 @@
 use std::{path::Path as FsPath, sync::Arc};
 
 use axum::{
+    body::Body,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    http::{header, HeaderMap, StatusCode, Uri},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
+use rust_embed::RustEmbed;
 use serde::Serialize;
 use tower_http::trace::TraceLayer;
+
+#[derive(RustEmbed)]
+#[folder = "web/build"]
+struct WebAssets;
+
+async fn static_handler(uri: Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+    let candidate = if path.is_empty() { "index.html" } else { path };
+
+    if let Some(content) = WebAssets::get(candidate) {
+        let mime = mime_guess::from_path(candidate).first_or_octet_stream();
+        return Response::builder()
+            .header(header::CONTENT_TYPE, mime.as_ref())
+            .body(Body::from(content.data.into_owned()))
+            .unwrap();
+    }
+    // SPA fallback: serve index.html for client-side routes
+    match WebAssets::get("index.html") {
+        Some(content) => Response::builder()
+            .header(header::CONTENT_TYPE, "text/html")
+            .body(Body::from(content.data.into_owned()))
+            .unwrap(),
+        None => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::from("frontend not built"))
+            .unwrap(),
+    }
+}
 
 use crate::{
     config::{AppConfig, TargetStatus, TargetsFile},
@@ -70,6 +100,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/targets/:id/status", get(target_status))
         .route("/notify/status", post(notify_status))
         .route("/targets/reload", post(reload_targets))
+        .fallback(static_handler)
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }

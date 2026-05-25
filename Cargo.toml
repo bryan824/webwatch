@@ -16,7 +16,9 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 diesel = { version = "2.3.9", features = ["sqlite", "r2d2"], optional = true }
 futures-util = "0.3"
+mime_guess = "2"
 rand = "0.8"
+rust-embed = { version = "8", features = ["mime-guess"] }
 regex = "1"
 reqwest = { version = "0.12", features = ["json", "cookies", "rustls-tls"], default-features = false }
 scraper = "0.23"
@@ -34,4 +36,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2"
 
 [dev-dependencies]
+axum = { version = "0.7", features = [] }
 tempfile = "3"
+tower = { version = "0.4", features = ["util"] }

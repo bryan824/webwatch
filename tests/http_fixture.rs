@@ -1,12 +1,15 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
-use axum::{response::Html, routing::get, Router};
+use axum::{body::Body, http::Request, response::Html, routing::get, Router};
+use tower::ServiceExt;
 use webwatch::{
     config::{
         AppConfig, BrowserConfig, ConditionConfig, SchedulerConfig, ServerConfig, TargetConfig,
     },
     config::{ConditionKind, EngineUsed},
-    evaluator,
+    db, evaluator,
+    http::HttpState,
+    scheduler::Scheduler,
 };
 
 async fn spawn_fixture() -> SocketAddr {
@@ -194,4 +197,89 @@ async fn js_rendered_page_requests_browser_when_http_cannot_prove_condition() {
         .expect_err("HTTP should need browser rendering");
 
     assert!(error.to_string().contains("browser rendering required"));
+}
+
+// ---------------------------------------------------------------------------
+// HTTP API + SPA fallback tests
+// ---------------------------------------------------------------------------
+
+async fn build_router() -> Router {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir
+        .keep()
+        .join(format!("test-{}.sqlite3", db::backend_name()));
+    let config = Arc::new(AppConfig {
+        sqlite_path: db_path.to_string_lossy().to_string(),
+        user_agent: "webwatch-test".to_string(),
+        discord_webhook_url: None,
+        api_token: None,
+        targets_path: None,
+        server: ServerConfig::default(),
+        scheduler: SchedulerConfig::default(),
+        browser: BrowserConfig::default(),
+    });
+    let persistence: Arc<dyn db::Persistence> =
+        Arc::from(db::connect(&config.sqlite_path).await.expect("connect"));
+    persistence.migrate().await.expect("migrate");
+    let client = reqwest::Client::new();
+    let scheduler = Arc::new(Scheduler::new(
+        config.clone(),
+        persistence.clone(),
+        client.clone(),
+    ));
+    scheduler.start(&[]).await;
+    let state = HttpState {
+        config,
+        scheduler,
+        db: persistence,
+        client,
+    };
+    webwatch::http::router(state)
+}
+
+#[tokio::test]
+async fn serves_spa_index_for_unknown_get() {
+    let app = build_router().await;
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/targets/some-id")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        text.contains("<!DOCTYPE html>")
+            || text.contains("<!doctype html>")
+            || text.starts_with("<!"),
+        "expected HTML document, got: {}",
+        &text[..text.len().min(200)]
+    );
+}
+
+#[tokio::test]
+async fn api_routes_are_not_shadowed_by_spa() {
+    let app = build_router().await;
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/targets")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // /targets is a JSON API endpoint — must NOT be served as SPA HTML
+    let ct = res.headers().get(axum::http::header::CONTENT_TYPE).cloned();
+    assert!(
+        ct.map(|v| v.to_str().unwrap_or("").contains("application/json"))
+            .unwrap_or(false),
+        "expected application/json content-type from /targets API route"
+    );
 }
