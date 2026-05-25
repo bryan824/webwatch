@@ -4,6 +4,16 @@ import { afterAll, afterEach, beforeAll } from 'vitest';
 import { setupServer } from 'msw/node';
 import { handlers } from './msw-handlers';
 
+// jsdom does not implement ResizeObserver; polyfill it so components that use
+// ScrollArea (bits-ui) don't throw in tests.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class ResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
+
 // Node 26 ships an experimental localStorage that blocks vitest's jsdom
 // environment from copying jsdom's own localStorage to globalThis (the filter
 // in populateGlobal skips keys that already exist on global). We patch
