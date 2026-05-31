@@ -1,7 +1,7 @@
 use chrono::Utc;
 use webwatch::{
-    config::{CheckOutcome, ConditionKind, EngineUsed},
-    config::{Condition, Target},
+    config::{CheckOutcome, EngineUsed},
+    config::{Condition, ConditionRule, Target},
     db,
 };
 
@@ -14,12 +14,10 @@ fn target_config() -> Target {
         interval_secs: None,
         conditions: vec![Condition {
             id: Some("stock".to_string()),
-            kind: ConditionKind::Text,
-            negate: false,
-            value: Some("Add to cart".to_string()),
-            selector: None,
-            threshold_cents: None,
-            price_selector: None,
+            rule: ConditionRule::Text {
+                value: "Add to cart".to_string(),
+                negate: false,
+            },
         }],
     }
 }

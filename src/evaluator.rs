@@ -6,7 +6,9 @@ use snafu::{ensure, ResultExt};
 use crate::{
     browser,
     config::AppConfig,
-    config::{CheckOutcome, Condition, ConditionKind, ConditionResult, EngineUsed, Target},
+    config::{
+        CheckOutcome, Condition, ConditionKind, ConditionResult, ConditionRule, EngineUsed, Target,
+    },
     error::{BrowserRequiredSnafu, HttpStatusSnafu, RequestSnafu, Result},
 };
 
@@ -106,30 +108,30 @@ fn evaluate_condition(
 ) -> Result<ConditionResult> {
     let mut evidence = Vec::new();
     let mut observed_price_cents = None;
-    let base_matched = match condition.kind {
-        ConditionKind::Text => {
-            let value = required_value(condition)?;
+    let base_matched = match &condition.rule {
+        ConditionRule::Text { value, negate } => {
             let found = contains_case_insensitive(page_text, value);
             if found {
                 evidence.push(format!("page text contains '{value}'"));
-            } else if condition.negate {
+            } else if *negate {
                 evidence.push(format!("page text does not contain '{value}'"));
             }
             found
         }
-        ConditionKind::Selector => {
-            let selector = required_selector(condition)?;
+        ConditionRule::Selector { selector, negate } => {
             let count = select_texts(document, selector)?.len();
             if count > 0 {
                 evidence.push(format!("selector '{selector}' matched {count} element(s)"));
-            } else if condition.negate {
+            } else if *negate {
                 evidence.push(format!("selector '{selector}' did not match"));
             }
             count > 0
         }
-        ConditionKind::SelectorText => {
-            let selector = required_selector(condition)?;
-            let value = required_value(condition)?;
+        ConditionRule::SelectorText {
+            selector,
+            value,
+            negate,
+        } => {
             let texts = select_texts(document, selector)?;
             let found_text = texts
                 .iter()
@@ -140,7 +142,7 @@ fn evaluate_condition(
                 ));
                 true
             } else {
-                if condition.negate {
+                if *negate {
                     evidence.push(format!(
                         "selector '{selector}' text does not contain '{value}'"
                     ));
@@ -148,39 +150,63 @@ fn evaluate_condition(
                 false
             }
         }
-        ConditionKind::Price => {
-            let threshold = required_threshold(condition)?;
-            observed_price_cents = extract_price_cents(document, page_text, condition)?;
+        ConditionRule::Price {
+            threshold_cents,
+            selector,
+            price_selector,
+            negate,
+        } => {
+            observed_price_cents = extract_price_cents(
+                document,
+                page_text,
+                selector.as_deref(),
+                price_selector.as_deref(),
+            )?;
             let below = observed_price_cents
-                .map(|price| price < threshold)
+                .map(|price| price < *threshold_cents)
                 .unwrap_or(false);
             if let Some(price) = observed_price_cents {
-                if condition.negate {
+                if *negate {
                     evidence.push(format!(
                         "observed price {} is above {}",
                         money(price),
-                        money(threshold)
+                        money(*threshold_cents)
                     ));
                 } else {
                     evidence.push(format!(
                         "observed price {} is below {}",
                         money(price),
-                        money(threshold)
+                        money(*threshold_cents)
                     ));
                 }
             }
             below
         }
-        ConditionKind::PriceObserved => {
-            observed_price_cents = extract_price_cents(document, page_text, condition)?;
+        ConditionRule::PriceObserved {
+            selector,
+            price_selector,
+            ..
+        } => {
+            observed_price_cents = extract_price_cents(
+                document,
+                page_text,
+                selector.as_deref(),
+                price_selector.as_deref(),
+            )?;
             let matched = observed_price_cents.is_some();
             if let Some(price) = observed_price_cents {
                 evidence.push(format!("observed price {}", money(price)));
             }
             matched
         }
+        ConditionRule::Invalid { missing_field, .. } => {
+            return Err(crate::Error::MissingConditionField {
+                condition_id: condition_id(condition),
+                field: missing_field,
+            });
+        }
     };
-    let matched = if condition.negate {
+    let matched = if condition.negate() {
         !base_matched
     } else {
         base_matched
@@ -192,7 +218,7 @@ fn evaluate_condition(
 
     Ok(ConditionResult {
         condition_id: condition_id(condition),
-        kind: condition.kind,
+        kind: condition.kind(),
         matched,
         evidence,
         observed_price_cents,
@@ -205,35 +231,6 @@ fn condition_id(condition: &Condition) -> String {
         .id
         .clone()
         .unwrap_or_else(|| "condition".to_string())
-}
-
-fn required_value(condition: &Condition) -> Result<&str> {
-    condition
-        .value
-        .as_deref()
-        .ok_or_else(|| crate::Error::MissingConditionField {
-            condition_id: condition_id(condition),
-            field: "value",
-        })
-}
-
-fn required_selector(condition: &Condition) -> Result<&str> {
-    condition
-        .selector
-        .as_deref()
-        .ok_or_else(|| crate::Error::MissingConditionField {
-            condition_id: condition_id(condition),
-            field: "selector",
-        })
-}
-
-fn required_threshold(condition: &Condition) -> Result<i64> {
-    condition
-        .threshold_cents
-        .ok_or_else(|| crate::Error::MissingConditionField {
-            condition_id: condition_id(condition),
-            field: "threshold_cents",
-        })
 }
 
 fn select_texts(document: &Html, selector: &str) -> Result<Vec<String>> {
@@ -250,11 +247,12 @@ fn select_texts(document: &Html, selector: &str) -> Result<Vec<String>> {
 fn extract_price_cents(
     document: &Html,
     page_text: &str,
-    condition: &Condition,
+    selector: Option<&str>,
+    price_selector: Option<&str>,
 ) -> Result<Option<i64>> {
-    let text = if let Some(selector) = &condition.price_selector {
+    let text = if let Some(selector) = price_selector {
         select_texts(document, selector)?.join(" ")
-    } else if let Some(selector) = &condition.selector {
+    } else if let Some(selector) = selector {
         let selected = select_texts(document, selector)?.join(" ");
         if selected.is_empty() {
             page_text.to_string()
@@ -302,9 +300,9 @@ fn should_try_browser(
     if result.matched || !looks_js_rendered {
         return false;
     }
-    !condition.negate
+    !condition.negate()
         && matches!(
-            condition.kind,
+            condition.kind(),
             ConditionKind::Text
                 | ConditionKind::Selector
                 | ConditionKind::SelectorText
@@ -320,7 +318,7 @@ fn money(cents: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{evaluate_document, first_price_cents};
-    use crate::config::{Condition, ConditionKind, EngineUsed, Target};
+    use crate::config::{Condition, ConditionRule, EngineUsed, Target};
 
     fn target(condition: Condition) -> Target {
         Target {
@@ -343,12 +341,11 @@ mod tests {
     fn evaluates_selector_text_condition() {
         let condition = Condition {
             id: Some("stock".to_string()),
-            kind: ConditionKind::SelectorText,
-            negate: false,
-            value: Some("Add to cart".to_string()),
-            selector: Some("button".to_string()),
-            threshold_cents: None,
-            price_selector: None,
+            rule: ConditionRule::SelectorText {
+                selector: "button".to_string(),
+                value: "Add to cart".to_string(),
+                negate: false,
+            },
         };
         let outcome = evaluate_document(
             target(condition),
@@ -365,12 +362,10 @@ mod tests {
     fn negates_text_condition() {
         let condition = Condition {
             id: Some("gone".to_string()),
-            kind: ConditionKind::Text,
-            negate: true,
-            value: Some("Add to cart".to_string()),
-            selector: None,
-            threshold_cents: None,
-            price_selector: None,
+            rule: ConditionRule::Text {
+                value: "Add to cart".to_string(),
+                negate: true,
+            },
         };
         let outcome = evaluate_document(
             target(condition),

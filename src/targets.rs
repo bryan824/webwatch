@@ -213,7 +213,7 @@ mod tests {
     use super::{CreateTarget, TargetLifecycle};
     use crate::{
         config::{
-            AppConfig, BrowserConfig, Condition, ConditionKind, SchedulerConfig, ServerConfig,
+            AppConfig, BrowserConfig, Condition, ConditionRule, SchedulerConfig, ServerConfig,
             Target,
         },
         db,
@@ -257,12 +257,10 @@ mod tests {
             interval_secs: None,
             conditions: vec![Condition {
                 id: None,
-                kind: ConditionKind::Text,
-                negate: false,
-                value: Some("Add to cart".to_string()),
-                selector: None,
-                threshold_cents: None,
-                price_selector: None,
+                rule: ConditionRule::Text {
+                    value: "Add to cart".to_string(),
+                    negate: false,
+                },
             }],
         }
     }
@@ -276,12 +274,10 @@ mod tests {
             interval_secs: None,
             conditions: vec![Condition {
                 id: Some("condition-1".to_string()),
-                kind: ConditionKind::Text,
-                negate: false,
-                value: Some("Add to cart".to_string()),
-                selector: None,
-                threshold_cents: None,
-                price_selector: None,
+                rule: ConditionRule::Text {
+                    value: "Add to cart".to_string(),
+                    negate: false,
+                },
             }],
         }
     }
@@ -336,12 +332,11 @@ mod tests {
                 interval_secs: None,
                 conditions: vec![Condition {
                     id: None,
-                    kind: ConditionKind::Text,
-                    negate: false,
-                    value: None,
-                    selector: None,
-                    threshold_cents: None,
-                    price_selector: None,
+                    rule: ConditionRule::Invalid {
+                        kind: crate::config::ConditionKind::Text,
+                        negate: false,
+                        missing_field: "value",
+                    },
                 }],
             })
             .await

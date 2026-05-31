@@ -82,12 +82,40 @@ pub struct Target {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Condition {
     pub id: Option<String>,
-    pub kind: ConditionKind,
-    pub negate: bool,
-    pub value: Option<String>,
-    pub selector: Option<String>,
-    pub threshold_cents: Option<i64>,
-    pub price_selector: Option<String>,
+    pub rule: ConditionRule,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConditionRule {
+    Text {
+        value: String,
+        negate: bool,
+    },
+    Selector {
+        selector: String,
+        negate: bool,
+    },
+    SelectorText {
+        selector: String,
+        value: String,
+        negate: bool,
+    },
+    Price {
+        threshold_cents: i64,
+        selector: Option<String>,
+        price_selector: Option<String>,
+        negate: bool,
+    },
+    PriceObserved {
+        selector: Option<String>,
+        price_selector: Option<String>,
+        negate: bool,
+    },
+    Invalid {
+        kind: ConditionKind,
+        negate: bool,
+        missing_field: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -124,12 +152,14 @@ impl<'de> Deserialize<'de> for Condition {
         let (kind, negate) = kind_from_wire(&raw.kind).map_err(serde::de::Error::custom)?;
         Ok(Self {
             id: raw.id,
-            kind,
-            negate,
-            value: raw.value,
-            selector: raw.selector,
-            threshold_cents: raw.threshold_cents,
-            price_selector: raw.price_selector,
+            rule: rule_from_raw(
+                kind,
+                negate,
+                raw.value,
+                raw.selector,
+                raw.threshold_cents,
+                raw.price_selector,
+            ),
         })
     }
 }
@@ -141,11 +171,11 @@ impl Serialize for Condition {
     {
         let mut state = serializer.serialize_struct("Condition", 7)?;
         state.serialize_field("id", &self.id)?;
-        state.serialize_field("kind", wire_from_kind(self.kind, self.negate))?;
-        state.serialize_field("value", &self.value)?;
-        state.serialize_field("selector", &self.selector)?;
-        state.serialize_field("threshold_cents", &self.threshold_cents)?;
-        state.serialize_field("price_selector", &self.price_selector)?;
+        state.serialize_field("kind", wire_from_kind(self.kind(), self.negate()))?;
+        state.serialize_field("value", &self.value())?;
+        state.serialize_field("selector", &self.selector())?;
+        state.serialize_field("threshold_cents", &self.threshold_cents())?;
+        state.serialize_field("price_selector", &self.price_selector())?;
         state.end()
     }
 }
@@ -177,6 +207,66 @@ fn wire_from_kind(kind: ConditionKind, negate: bool) -> &'static str {
         (ConditionKind::Price, true) => "price_above",
         (ConditionKind::PriceObserved, false) => "price_changed",
         (ConditionKind::PriceObserved, true) => "price_changed",
+    }
+}
+
+fn rule_from_raw(
+    kind: ConditionKind,
+    negate: bool,
+    value: Option<String>,
+    selector: Option<String>,
+    threshold_cents: Option<i64>,
+    price_selector: Option<String>,
+) -> ConditionRule {
+    match kind {
+        ConditionKind::Text => value
+            .map(|value| ConditionRule::Text { value, negate })
+            .unwrap_or(ConditionRule::Invalid {
+                kind,
+                negate,
+                missing_field: "value",
+            }),
+        ConditionKind::Selector => selector
+            .map(|selector| ConditionRule::Selector { selector, negate })
+            .unwrap_or(ConditionRule::Invalid {
+                kind,
+                negate,
+                missing_field: "selector",
+            }),
+        ConditionKind::SelectorText => match (selector, value) {
+            (Some(selector), Some(value)) => ConditionRule::SelectorText {
+                selector,
+                value,
+                negate,
+            },
+            (None, _) => ConditionRule::Invalid {
+                kind,
+                negate,
+                missing_field: "selector",
+            },
+            (_, None) => ConditionRule::Invalid {
+                kind,
+                negate,
+                missing_field: "value",
+            },
+        },
+        ConditionKind::Price => threshold_cents
+            .map(|threshold_cents| ConditionRule::Price {
+                threshold_cents,
+                selector,
+                price_selector,
+                negate,
+            })
+            .unwrap_or(ConditionRule::Invalid {
+                kind,
+                negate,
+                missing_field: "threshold_cents",
+            }),
+        ConditionKind::PriceObserved => ConditionRule::PriceObserved {
+            selector,
+            price_selector,
+            negate,
+        },
     }
 }
 
@@ -319,18 +409,67 @@ impl Default for SchedulerConfig {
 }
 
 impl Condition {
+    pub fn kind(&self) -> ConditionKind {
+        match &self.rule {
+            ConditionRule::Text { .. } => ConditionKind::Text,
+            ConditionRule::Selector { .. } => ConditionKind::Selector,
+            ConditionRule::SelectorText { .. } => ConditionKind::SelectorText,
+            ConditionRule::Price { .. } => ConditionKind::Price,
+            ConditionRule::PriceObserved { .. } => ConditionKind::PriceObserved,
+            ConditionRule::Invalid { kind, .. } => *kind,
+        }
+    }
+
+    pub fn negate(&self) -> bool {
+        match &self.rule {
+            ConditionRule::Text { negate, .. }
+            | ConditionRule::Selector { negate, .. }
+            | ConditionRule::SelectorText { negate, .. }
+            | ConditionRule::Price { negate, .. }
+            | ConditionRule::PriceObserved { negate, .. }
+            | ConditionRule::Invalid { negate, .. } => *negate,
+        }
+    }
+
+    pub fn value(&self) -> Option<&str> {
+        match &self.rule {
+            ConditionRule::Text { value, .. } | ConditionRule::SelectorText { value, .. } => {
+                Some(value)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn selector(&self) -> Option<&str> {
+        match &self.rule {
+            ConditionRule::Selector { selector, .. }
+            | ConditionRule::SelectorText { selector, .. } => Some(selector),
+            ConditionRule::Price { selector, .. }
+            | ConditionRule::PriceObserved { selector, .. } => selector.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn threshold_cents(&self) -> Option<i64> {
+        match &self.rule {
+            ConditionRule::Price {
+                threshold_cents, ..
+            } => Some(*threshold_cents),
+            _ => None,
+        }
+    }
+
+    pub fn price_selector(&self) -> Option<&str> {
+        match &self.rule {
+            ConditionRule::Price { price_selector, .. }
+            | ConditionRule::PriceObserved { price_selector, .. } => price_selector.as_deref(),
+            _ => None,
+        }
+    }
+
     fn validate_required_fields(&self) -> Result<()> {
-        match self.kind {
-            ConditionKind::Text => self.require_field(self.value.is_some(), "value")?,
-            ConditionKind::Selector => self.require_field(self.selector.is_some(), "selector")?,
-            ConditionKind::SelectorText => {
-                self.require_field(self.selector.is_some(), "selector")?;
-                self.require_field(self.value.is_some(), "value")?;
-            }
-            ConditionKind::Price => {
-                self.require_field(self.threshold_cents.is_some(), "threshold_cents")?;
-            }
-            ConditionKind::PriceObserved => {}
+        if let ConditionRule::Invalid { missing_field, .. } = self.rule {
+            self.require_field(false, missing_field)?;
         }
         Ok(())
     }
@@ -437,7 +576,7 @@ fn default_browser_wait_ms() -> u64 {
 mod tests {
     use std::fs;
 
-    use super::{AppConfig, Condition, ConditionKind, TargetsFile};
+    use super::{AppConfig, Condition, ConditionKind, ConditionRule, TargetsFile};
 
     #[test]
     fn builds_generic_target_from_url_and_conditions() {
@@ -460,8 +599,8 @@ mod tests {
         let target = &targets.targets[0];
         assert_eq!(target.url, "https://example.com/product");
         assert_eq!(target.conditions[0].id.as_deref(), Some("condition-1"));
-        assert_eq!(target.conditions[0].kind, ConditionKind::Text);
-        assert!(!target.conditions[0].negate);
+        assert_eq!(target.conditions[0].kind(), ConditionKind::Text);
+        assert!(!target.conditions[0].negate());
     }
 
     #[test]
@@ -552,8 +691,8 @@ mod tests {
         for (wire, kind, negate) in cases {
             let condition = toml::from_str::<Condition>(&format!("kind = \"{wire}\""))
                 .expect("parse condition");
-            assert_eq!(condition.kind, kind);
-            assert_eq!(condition.negate, negate);
+            assert_eq!(condition.kind(), kind);
+            assert_eq!(condition.negate(), negate);
         }
     }
 
@@ -613,7 +752,7 @@ mod tests {
     fn accepts_price_changed_without_price_selector() {
         let targets = validate_single_condition("kind = \"price_changed\"").expect("valid");
         assert_eq!(
-            targets.targets[0].conditions[0].kind,
+            targets.targets[0].conditions[0].kind(),
             ConditionKind::PriceObserved
         );
     }
@@ -638,12 +777,10 @@ mod tests {
     fn serializes_back_to_legacy_strings() {
         let condition = Condition {
             id: Some("gone".to_string()),
-            kind: ConditionKind::Text,
-            negate: true,
-            value: Some("Add to cart".to_string()),
-            selector: None,
-            threshold_cents: None,
-            price_selector: None,
+            rule: ConditionRule::Text {
+                value: "Add to cart".to_string(),
+                negate: true,
+            },
         };
 
         let encoded = toml::to_string(&condition).expect("serialize condition");

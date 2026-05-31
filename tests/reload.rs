@@ -5,7 +5,7 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use webwatch::{
     config::{
-        AppConfig, BrowserConfig, Condition, ConditionKind, SchedulerConfig, ServerConfig, Target,
+        AppConfig, BrowserConfig, Condition, ConditionRule, SchedulerConfig, ServerConfig, Target,
         TargetStatus,
     },
     db,
@@ -57,12 +57,10 @@ fn target(id: &str, url: String, value: &str) -> Target {
         interval_secs: Some(3_600),
         conditions: vec![Condition {
             id: Some("text".to_string()),
-            kind: ConditionKind::Text,
-            negate: false,
-            value: Some(value.to_string()),
-            selector: None,
-            threshold_cents: None,
-            price_selector: None,
+            rule: ConditionRule::Text {
+                value: value.to_string(),
+                negate: false,
+            },
         }],
     }
 }
@@ -87,10 +85,7 @@ value = "{}"
                 target.id,
                 target.name,
                 target.url,
-                target.conditions[0]
-                    .value
-                    .as_deref()
-                    .unwrap_or("Add to cart")
+                target.conditions[0].value().unwrap_or("Add to cart")
             )
         })
         .collect::<Vec<_>>()
