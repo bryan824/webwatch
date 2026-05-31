@@ -11,8 +11,8 @@ use snafu::{ensure, ResultExt};
 use url::Url;
 
 use crate::error::{
-    EmptyConditionsSnafu, EmptyTargetsSnafu, ParseConfigSnafu, ParseTargetUrlSnafu,
-    ReadConfigSnafu, ReadTargetsSnafu, Result,
+    EmptyConditionsSnafu, ParseConfigSnafu, ParseTargetUrlSnafu, ReadConfigSnafu, ReadTargetsSnafu,
+    Result,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -79,8 +79,6 @@ pub struct Target {
     pub conditions: Vec<Condition>,
 }
 
-pub type TargetConfig = Target;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Condition {
     pub id: Option<String>,
@@ -91,8 +89,6 @@ pub struct Condition {
     pub threshold_cents: Option<i64>,
     pub price_selector: Option<String>,
 }
-
-pub type ConditionConfig = Condition;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -217,6 +213,7 @@ pub struct TargetStatus {
     pub target_id: String,
     pub name: String,
     pub url: String,
+    pub enabled: bool,
     pub matched: Option<bool>,
     pub engine_used: Option<EngineUsed>,
     pub price_cents: Option<i64>,
@@ -281,6 +278,11 @@ impl AppConfig {
 
 impl TargetsFile {
     pub fn load(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            return Ok(Self {
+                targets: Vec::new(),
+            });
+        }
         let path_string = path.display().to_string();
         let raw = fs::read_to_string(path).context(ReadTargetsSnafu {
             path: path_string.clone(),
@@ -291,7 +293,6 @@ impl TargetsFile {
     }
 
     pub fn resolve_and_validate(mut self) -> Result<Self> {
-        ensure!(!self.targets.is_empty(), EmptyTargetsSnafu);
         for target in &mut self.targets {
             target.validate_and_resolve()?;
         }
@@ -327,10 +328,9 @@ impl Target {
             .unwrap_or(config.scheduler.default_interval_secs)
     }
 
-    pub fn to_target(&self) -> Result<Target> {
-        let mut target = self.clone();
-        target.validate_and_resolve()?;
-        Ok(target)
+    pub fn validated(mut self) -> Result<Self> {
+        self.validate_and_resolve()?;
+        Ok(self)
     }
 
     fn validate_and_resolve(&mut self) -> Result<()> {

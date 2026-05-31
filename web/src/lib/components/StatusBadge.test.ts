@@ -5,7 +5,7 @@ import StatusBadge from './StatusBadge.svelte';
 import type { TargetStatus } from '$lib/api/types';
 
 const t = (over: Partial<TargetStatus>): TargetStatus => ({
-  target_id: 'x', name: 'X', url: 'https://e.com', matched: null, engine_used: null,
+  target_id: 'x', name: 'X', url: 'https://e.com', enabled: true, matched: null, engine_used: null,
   price_cents: null, evidence: [], condition_results: [], last_success_at: null,
   last_error_at: null, last_error: null, last_alert_at: null, ...over
 });

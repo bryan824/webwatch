@@ -4,7 +4,7 @@ use axum::{body::Body, http::Request, response::Html, routing::get, Router};
 use tower::ServiceExt;
 use webwatch::{
     config::{
-        AppConfig, BrowserConfig, ConditionConfig, SchedulerConfig, ServerConfig, TargetConfig,
+        AppConfig, BrowserConfig, Condition, SchedulerConfig, ServerConfig, Target,
     },
     config::{ConditionKind, EngineUsed},
     db, evaluator,
@@ -75,7 +75,7 @@ async fn js_rendered() -> Html<&'static str> {
     )
 }
 
-fn config_for(url: String, conditions: Vec<ConditionConfig>) -> (AppConfig, TargetConfig) {
+fn config_for(url: String, conditions: Vec<Condition>) -> (AppConfig, Target) {
     let config = AppConfig {
         sqlite_path: "webwatch.sqlite3".to_string(),
         user_agent: "webwatch-test".to_string(),
@@ -86,7 +86,7 @@ fn config_for(url: String, conditions: Vec<ConditionConfig>) -> (AppConfig, Targ
         scheduler: SchedulerConfig::default(),
         browser: BrowserConfig::default(),
     };
-    let target = TargetConfig {
+    let target = Target {
         id: "fixture".to_string(),
         name: "Fixture".to_string(),
         url,
@@ -103,7 +103,7 @@ async fn http_engine_matches_text_selector_and_price_conditions() {
     let (config, target_config) = config_for(
         format!("http://{addr}/static-in-stock"),
         vec![
-            ConditionConfig {
+            Condition {
                 id: Some("text".to_string()),
                 kind: ConditionKind::Text,
                 negate: false,
@@ -112,7 +112,7 @@ async fn http_engine_matches_text_selector_and_price_conditions() {
                 threshold_cents: None,
                 price_selector: None,
             },
-            ConditionConfig {
+            Condition {
                 id: Some("button".to_string()),
                 kind: ConditionKind::Selector,
                 negate: false,
@@ -121,7 +121,7 @@ async fn http_engine_matches_text_selector_and_price_conditions() {
                 threshold_cents: None,
                 price_selector: None,
             },
-            ConditionConfig {
+            Condition {
                 id: Some("price".to_string()),
                 kind: ConditionKind::Price,
                 negate: false,
@@ -133,7 +133,7 @@ async fn http_engine_matches_text_selector_and_price_conditions() {
         ],
     );
     let config = config.resolve_env().expect("valid config");
-    let target = target_config.to_target().expect("target");
+    let target = target_config.validated().expect("valid target");
     let client = reqwest::Client::new();
 
     let outcome = evaluator::check_target(&config, &client, target)
@@ -151,7 +151,7 @@ async fn http_engine_detects_sold_out_text_disappeared_condition() {
     let addr = spawn_fixture().await;
     let (config, target_config) = config_for(
         format!("http://{addr}/static-sold-out"),
-        vec![ConditionConfig {
+        vec![Condition {
             id: Some("not-available".to_string()),
             kind: ConditionKind::Text,
             negate: true,
@@ -162,7 +162,7 @@ async fn http_engine_detects_sold_out_text_disappeared_condition() {
         }],
     );
     let config = config.resolve_env().expect("valid config");
-    let target = target_config.to_target().expect("target");
+    let target = target_config.validated().expect("valid target");
     let client = reqwest::Client::new();
 
     let outcome = evaluator::check_target(&config, &client, target)
@@ -178,7 +178,7 @@ async fn js_rendered_page_requests_browser_when_http_cannot_prove_condition() {
     let addr = spawn_fixture().await;
     let (config, target_config) = config_for(
         format!("http://{addr}/js-rendered"),
-        vec![ConditionConfig {
+        vec![Condition {
             id: Some("button".to_string()),
             kind: ConditionKind::Selector,
             negate: false,
@@ -189,7 +189,7 @@ async fn js_rendered_page_requests_browser_when_http_cannot_prove_condition() {
         }],
     );
     let config = config.resolve_env().expect("valid config");
-    let target = target_config.to_target().expect("target");
+    let target = target_config.validated().expect("valid target");
     let client = reqwest::Client::new();
 
     let error = evaluator::check_target(&config, &client, target)

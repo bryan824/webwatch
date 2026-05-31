@@ -7,7 +7,7 @@ import { sampleTargets } from '$test/msw-handlers';
 
 describe('TargetDetail', () => {
   it('shows evidence and condition results', () => {
-    render(TargetDetail, { props: { target: sampleTargets[0], checking: false, onCheckNow: () => {} } });
+    render(TargetDetail, { props: { target: sampleTargets[0], checking: false, mutating: false, onCheckNow: () => {}, onToggleEnabled: () => {}, onDelete: () => {} } });
     // The evidence string appears in both the Evidence section and inside ConditionResultRow
     expect(screen.getAllByText('"Add to cart" found')[0]).toBeInTheDocument();
     expect(screen.getByText(/text/)).toBeInTheDocument();
@@ -15,13 +15,13 @@ describe('TargetDetail', () => {
 
   it('fires onCheckNow when the button is clicked', async () => {
     const onCheckNow = vi.fn();
-    render(TargetDetail, { props: { target: sampleTargets[0], checking: false, onCheckNow } });
+    render(TargetDetail, { props: { target: sampleTargets[0], checking: false, mutating: false, onCheckNow, onToggleEnabled: () => {}, onDelete: () => {} } });
     await userEvent.click(screen.getByRole('button', { name: /check now/i }));
     expect(onCheckNow).toHaveBeenCalledOnce();
   });
 
   it('shows an unknown empty-state for never-checked targets', () => {
-    render(TargetDetail, { props: { target: sampleTargets[1], checking: false, onCheckNow: () => {} } });
+    render(TargetDetail, { props: { target: sampleTargets[1], checking: false, mutating: false, onCheckNow: () => {}, onToggleEnabled: () => {}, onDelete: () => {} } });
     expect(screen.getByText(/not checked yet/i)).toBeInTheDocument();
   });
 });

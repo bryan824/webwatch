@@ -15,6 +15,7 @@ export interface TargetStatus {
   target_id: string;
   name: string;
   url: string;
+  enabled: boolean;
   matched: boolean | null;
   engine_used: EngineUsed | null;
   price_cents: number | null;
@@ -42,4 +43,31 @@ export interface NotifyStatusResponse {
   sent: boolean;
   summary: string;
   statuses: TargetStatus[];
+}
+
+export type ConditionWireKind =
+  | 'text_appears'
+  | 'text_disappears'
+  | 'selector_exists'
+  | 'selector_missing'
+  | 'selector_text_contains'
+  | 'selector_text_not_contains'
+  | 'price_below'
+  | 'price_above'
+  | 'price_changed';
+
+export interface ConditionInput {
+  kind: ConditionWireKind;
+  value?: string;
+  selector?: string;
+  threshold_cents?: number;
+  price_selector?: string;
+}
+
+export interface TargetInput {
+  name: string;
+  url: string;
+  enabled?: boolean;
+  interval_secs?: number;
+  conditions: ConditionInput[];
 }

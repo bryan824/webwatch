@@ -5,7 +5,11 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
-use crate::{config::AppConfig, config::Target, db::Persistence, discord, evaluator, Result};
+use crate::{
+    config::{AppConfig, CheckOutcome, Target},
+    db::Persistence,
+    discord, monitor, Result,
+};
 
 #[derive(Clone)]
 pub struct Scheduler {
@@ -53,19 +57,91 @@ impl Scheduler {
     }
 
     pub async fn reload(&self, targets: &[Target]) -> Result<ReloadReport> {
+        self.db.import_targets(targets).await?;
         let mut inner = self.inner.lock().await;
-        let (mut report, plan) = diff_targets(&inner.tasks, targets);
-        self.db.sync_targets(targets).await?;
-        apply_plan(&mut inner, plan, self);
+        let mut report = ReloadReport::default();
+        for target in targets.iter().filter(|target| target.enabled()) {
+            match inner
+                .tasks
+                .get(&target.id)
+                .map(|running| running.target == *target)
+            {
+                Some(true) => report.unchanged.push(target.id.clone()),
+                Some(false) => {
+                    report.changed.push(target.id.clone());
+                    self.reconcile(&mut inner, target.clone());
+                }
+                None => {
+                    report.added.push(target.id.clone());
+                    self.reconcile(&mut inner, target.clone());
+                }
+            }
+        }
         sort_report(&mut report);
         info!(
             added = ?report.added,
-            removed = ?report.removed,
             changed = ?report.changed,
             unchanged = ?report.unchanged,
-            "scheduler reload"
+            "scheduler reload (import)"
         );
         Ok(report)
+    }
+
+    /// Create or update a target and reflect it in the running task set.
+    pub async fn add_target(&self, target: Target) -> Result<()> {
+        self.db.ensure_target(&target).await?;
+        let mut inner = self.inner.lock().await;
+        self.reconcile(&mut inner, target);
+        Ok(())
+    }
+
+    /// Remove a target everywhere. Returns whether it existed.
+    pub async fn remove_target(&self, id: &str) -> Result<bool> {
+        let exists = self
+            .db
+            .list_targets()
+            .await?
+            .iter()
+            .any(|target| target.id == id);
+        if !exists {
+            return Ok(false);
+        }
+        self.db.remove_target(id).await?;
+        let mut inner = self.inner.lock().await;
+        if let Some(running) = inner.tasks.remove(id) {
+            running.handle.abort();
+        }
+        Ok(true)
+    }
+
+    /// Enable or disable a target. Returns whether the target existed.
+    pub async fn set_enabled(&self, id: &str, enabled: bool) -> Result<bool> {
+        let Some(mut target) = self
+            .db
+            .list_targets()
+            .await?
+            .into_iter()
+            .find(|target| target.id == id)
+        else {
+            return Ok(false);
+        };
+        self.db.set_enabled(id, enabled).await?;
+        target.enabled = enabled;
+        let mut inner = self.inner.lock().await;
+        self.reconcile(&mut inner, target);
+        Ok(true)
+    }
+
+    /// Start, restart, or stop a target's loop to match its `enabled` flag.
+    fn reconcile(&self, inner: &mut SchedulerInner, target: Target) {
+        if let Some(running) = inner.tasks.remove(&target.id) {
+            running.handle.abort();
+        }
+        if target.enabled() {
+            let id = target.id.clone();
+            let handle = self.spawn_target(target.clone());
+            inner.tasks.insert(id, RunningTarget { target, handle });
+        }
     }
 
     pub async fn current_targets(&self) -> Vec<Target> {
@@ -99,73 +175,6 @@ impl Scheduler {
     }
 }
 
-enum PlanStep {
-    Remove(String),
-    Add(Target),
-    Change(Target),
-}
-
-fn diff_targets(
-    current: &HashMap<String, RunningTarget>,
-    targets: &[Target],
-) -> (ReloadReport, Vec<PlanStep>) {
-    let desired = targets
-        .iter()
-        .filter(|target| target.enabled())
-        .map(|target| (target.id.clone(), target.clone()))
-        .collect::<HashMap<_, _>>();
-    let mut report = ReloadReport::default();
-    let mut plan = Vec::new();
-
-    for (id, running) in current {
-        match desired.get(id) {
-            Some(target) if *target == running.target => report.unchanged.push(id.clone()),
-            Some(target) => {
-                report.changed.push(id.clone());
-                plan.push(PlanStep::Change(target.clone()));
-            }
-            None => {
-                report.removed.push(id.clone());
-                plan.push(PlanStep::Remove(id.clone()));
-            }
-        }
-    }
-
-    for (id, target) in desired {
-        if !current.contains_key(&id) {
-            report.added.push(id);
-            plan.push(PlanStep::Add(target));
-        }
-    }
-
-    (report, plan)
-}
-
-fn apply_plan(inner: &mut SchedulerInner, plan: Vec<PlanStep>, scheduler: &Scheduler) {
-    for step in plan {
-        match step {
-            PlanStep::Remove(id) => {
-                if let Some(running) = inner.tasks.remove(&id) {
-                    running.handle.abort();
-                }
-            }
-            PlanStep::Add(target) => {
-                let id = target.id.clone();
-                let handle = scheduler.spawn_target(target.clone());
-                inner.tasks.insert(id, RunningTarget { target, handle });
-            }
-            PlanStep::Change(target) => {
-                if let Some(running) = inner.tasks.remove(&target.id) {
-                    running.handle.abort();
-                }
-                let id = target.id.clone();
-                let handle = scheduler.spawn_target(target.clone());
-                inner.tasks.insert(id, RunningTarget { target, handle });
-            }
-        }
-    }
-}
-
 fn sort_report(report: &mut ReloadReport) {
     report.added.sort();
     report.removed.sort();
@@ -194,40 +203,47 @@ async fn run_once(
     client: &reqwest::Client,
     target: Target,
 ) {
-    match evaluator::check_target(config, client, target.clone()).await {
-        Ok(outcome) => match db.record_success(&outcome).await {
-            Ok(should_alert) => {
-                info!(
-                    target_id = %outcome.target.id,
-                    matched = outcome.matched,
-                    engine = ?outcome.engine_used,
-                    price_cents = ?outcome.price_cents,
-                    should_alert,
-                    "check succeeded"
-                );
-                if should_alert {
-                    match discord::send_condition_alert(client, config, &outcome).await {
-                        Ok(()) => {
-                            if let Err(error) = db.mark_alert_sent(&outcome.target.id).await {
-                                warn!(%error, target_id = %outcome.target.id, "failed to record alert timestamp");
-                            }
-                        }
-                        Err(error) => {
-                            warn!(%error, target_id = %outcome.target.id, "failed to send discord alert")
-                        }
-                    }
-                }
+    let target_id = target.id.clone();
+    match monitor::run_check(config, db, client, target).await {
+        Ok(monitor::CheckReport::Checked {
+            outcome,
+            should_alert,
+        }) => {
+            info!(
+                target_id = %outcome.target.id,
+                matched = outcome.matched,
+                engine = ?outcome.engine_used,
+                price_cents = ?outcome.price_cents,
+                should_alert,
+                "check succeeded"
+            );
+            if should_alert {
+                deliver_alert(config, db, client, &outcome).await;
             }
-            Err(error) => {
-                error!(%error, target_id = %target.id, "failed to record successful check")
-            }
-        },
+        }
+        Ok(monitor::CheckReport::Failed { error }) => {
+            warn!(error = %error, target_id = %target_id, "check failed");
+        }
         Err(error) => {
-            let error_text = error.to_string();
-            warn!(error = %error_text, target_id = %target.id, "check failed");
-            if let Err(record_error) = db.record_error(&target.id, &error_text).await {
-                error!(%record_error, target_id = %target.id, "failed to record check error");
+            error!(%error, target_id = %target_id, "failed to record check");
+        }
+    }
+}
+
+async fn deliver_alert(
+    config: &AppConfig,
+    db: &dyn Persistence,
+    client: &reqwest::Client,
+    outcome: &CheckOutcome,
+) {
+    match discord::send_condition_alert(client, config, outcome).await {
+        Ok(()) => {
+            if let Err(error) = db.mark_alert_sent(&outcome.target.id).await {
+                warn!(%error, target_id = %outcome.target.id, "failed to record alert timestamp");
             }
+        }
+        Err(error) => {
+            warn!(%error, target_id = %outcome.target.id, "failed to send discord alert")
         }
     }
 }

@@ -2,9 +2,8 @@ use async_trait::async_trait;
 use snafu::ResultExt;
 
 use crate::{
-    config::TargetConfig,
-    config::{CheckOutcome, TargetStatus},
-    error::{Result, SerializeStateSnafu},
+    config::{CheckOutcome, Target, TargetStatus},
+    error::{ParseStateSnafu, Result, SerializeStateSnafu},
 };
 
 use super::{
@@ -58,6 +57,8 @@ struct StatusRow {
     name: String,
     #[diesel(sql_type = diesel::sql_types::Text)]
     url: String,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    enabled: i64,
     #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::BigInt>)]
     matched: Option<i64>,
     #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
@@ -76,6 +77,22 @@ struct StatusRow {
     last_error: Option<String>,
     #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
     last_alert_at: Option<String>,
+}
+
+#[derive(QueryableByName)]
+struct TargetRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    id: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    name: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    url: String,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    enabled: i64,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::BigInt>)]
+    interval_secs: Option<i64>,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    conditions_json: String,
 }
 
 #[async_trait]
@@ -107,22 +124,23 @@ impl Persistence for DieselPersistence {
         .await
     }
 
-    async fn ensure_target(&self, target: &TargetConfig) -> Result<()> {
+    async fn ensure_target(&self, target: &Target) -> Result<()> {
         let pool = self.pool.clone();
         let target = target.clone();
         spawn(move || {
-            use diesel::sql_types::{BigInt, Text};
+            use diesel::sql_types::{BigInt, Nullable, Text};
             let conn = &mut conn(&pool)?;
-            let parsed = target.to_target()?;
             let enabled = i64::from(target.enabled());
+            let interval_secs = target.interval_secs.map(|secs| secs as i64);
             let now = chrono::Utc::now().to_rfc3339();
             let conditions_json =
-                serde_json::to_string(&parsed.conditions).context(SerializeStateSnafu)?;
-            sql_query("INSERT INTO targets (id, name, url, enabled, conditions_json, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(id) DO UPDATE SET name = excluded.name, url = excluded.url, enabled = excluded.enabled, conditions_json = excluded.conditions_json, updated_at = excluded.updated_at")
+                serde_json::to_string(&target.conditions).context(SerializeStateSnafu)?;
+            sql_query("INSERT INTO targets (id, name, url, enabled, interval_secs, conditions_json, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(id) DO UPDATE SET name = excluded.name, url = excluded.url, enabled = excluded.enabled, interval_secs = excluded.interval_secs, conditions_json = excluded.conditions_json, updated_at = excluded.updated_at")
                 .bind::<Text, _>(&target.id)
                 .bind::<Text, _>(&target.name)
-                .bind::<Text, _>(&parsed.url)
+                .bind::<Text, _>(&target.url)
                 .bind::<BigInt, _>(enabled)
+                .bind::<Nullable<BigInt>, _>(interval_secs)
                 .bind::<Text, _>(&conditions_json)
                 .bind::<Text, _>(&now)
                 .execute(conn)
@@ -136,40 +154,54 @@ impl Persistence for DieselPersistence {
         .await
     }
 
-    async fn purge_targets_not_in(&self, targets: &[TargetConfig]) -> Result<()> {
-        let keep = targets
-            .iter()
-            .map(|target| target.id.as_str())
-            .collect::<std::collections::HashSet<_>>();
-        let remove = self
-            .statuses()
-            .await?
-            .into_iter()
-            .filter(|status| !keep.contains(status.target_id.as_str()))
-            .map(|status| status.target_id)
-            .collect::<Vec<_>>();
-        if remove.is_empty() {
-            return Ok(());
-        }
-
+    async fn list_targets(&self) -> Result<Vec<Target>> {
         let pool = self.pool.clone();
+        spawn(move || {
+            let conn = &mut conn(&pool)?;
+            sql_query("SELECT id, name, url, enabled, interval_secs, conditions_json FROM targets ORDER BY id")
+                .load::<TargetRow>(conn)
+                .map_err(db_err)?
+                .into_iter()
+                .map(target_from_row)
+                .collect()
+        })
+        .await
+    }
+
+    async fn remove_target(&self, target_id: &str) -> Result<()> {
+        let pool = self.pool.clone();
+        let target_id = target_id.to_string();
         spawn(move || {
             use diesel::sql_types::Text;
             let conn = &mut conn(&pool)?;
-            for target_id in remove {
-                sql_query("DELETE FROM checks WHERE target_id = ?1")
-                    .bind::<Text, _>(&target_id)
-                    .execute(conn)
-                    .map_err(db_err)?;
-                sql_query("DELETE FROM target_state WHERE target_id = ?1")
-                    .bind::<Text, _>(&target_id)
-                    .execute(conn)
-                    .map_err(db_err)?;
-                sql_query("DELETE FROM targets WHERE id = ?1")
-                    .bind::<Text, _>(&target_id)
-                    .execute(conn)
-                    .map_err(db_err)?;
-            }
+            sql_query("DELETE FROM checks WHERE target_id = ?1")
+                .bind::<Text, _>(&target_id)
+                .execute(conn)
+                .map_err(db_err)?;
+            sql_query("DELETE FROM target_state WHERE target_id = ?1")
+                .bind::<Text, _>(&target_id)
+                .execute(conn)
+                .map_err(db_err)?;
+            sql_query("DELETE FROM targets WHERE id = ?1")
+                .bind::<Text, _>(&target_id)
+                .execute(conn)
+                .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn set_enabled(&self, target_id: &str, enabled: bool) -> Result<()> {
+        let pool = self.pool.clone();
+        let target_id = target_id.to_string();
+        spawn(move || {
+            use diesel::sql_types::{BigInt, Text};
+            let conn = &mut conn(&pool)?;
+            sql_query("UPDATE targets SET enabled = ?2 WHERE id = ?1")
+                .bind::<Text, _>(&target_id)
+                .bind::<BigInt, _>(i64::from(enabled))
+                .execute(conn)
+                .map_err(db_err)?;
             Ok(())
         })
         .await
@@ -272,6 +304,7 @@ impl Persistence for DieselPersistence {
                         id: row.id,
                         name: row.name,
                         url: row.url,
+                        enabled: row.enabled,
                         matched: row.matched,
                         engine_used: row.engine_used,
                         price_cents: row.price_cents,
@@ -293,6 +326,18 @@ fn conn(
     pool: &DieselPool,
 ) -> Result<diesel::r2d2::PooledConnection<ConnectionManager<SqliteConnection>>> {
     pool.get().map_err(db_err)
+}
+
+fn target_from_row(row: TargetRow) -> Result<Target> {
+    let conditions = serde_json::from_str(&row.conditions_json).context(ParseStateSnafu)?;
+    Ok(Target {
+        id: row.id,
+        name: row.name,
+        url: row.url,
+        enabled: row.enabled != 0,
+        interval_secs: row.interval_secs.map(|secs| secs as u64),
+        conditions,
+    })
 }
 
 fn was_matched(conn: &mut SqliteConnection, target_id: &str) -> Result<bool> {

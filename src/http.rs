@@ -9,7 +9,7 @@ use axum::{
     Json, Router,
 };
 use rust_embed::RustEmbed;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
 
 #[derive(RustEmbed)]
@@ -41,10 +41,10 @@ async fn static_handler(uri: Uri) -> Response {
 }
 
 use crate::{
-    config::{AppConfig, TargetStatus, TargetsFile},
+    config::{AppConfig, Condition, Target, TargetStatus, TargetsFile},
     db,
     db::Persistence,
-    discord, evaluator,
+    discord, monitor,
     scheduler::{ReloadReport, Scheduler},
 };
 
@@ -93,10 +93,31 @@ impl From<ReloadReport> for ReloadTargetsResponse {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateTargetRequest {
+    name: String,
+    url: String,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    interval_secs: Option<u64>,
+    #[serde(default)]
+    conditions: Vec<Condition>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchTargetRequest {
+    enabled: bool,
+}
+
 pub fn router(state: HttpState) -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/targets", get(targets))
+        .route("/targets", get(targets).post(create_target))
+        .route(
+            "/targets/:id",
+            get(static_handler).delete(delete_target).patch(patch_target),
+        )
         .route("/targets/:id/status", get(target_status))
         .route("/notify/status", post(notify_status))
         .route("/targets/reload", post(reload_targets))
@@ -195,40 +216,130 @@ async fn reload_targets(State(state): State<HttpState>, headers: HeaderMap) -> i
     }
 }
 
+async fn create_target(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateTargetRequest>,
+) -> impl IntoResponse {
+    if let Some(response) = authorize_required(&state, &headers) {
+        return response;
+    }
+
+    let existing_ids = match state.db.list_targets().await {
+        Ok(targets) => targets
+            .into_iter()
+            .map(|target| target.id)
+            .collect::<Vec<_>>(),
+        Err(error) => return internal_error(error),
+    };
+    let target = Target {
+        id: unique_slug(&request.name, &existing_ids),
+        name: request.name,
+        url: request.url,
+        enabled: request.enabled.unwrap_or(true),
+        interval_secs: request.interval_secs,
+        conditions: request.conditions,
+    };
+    let target = match target.validated() {
+        Ok(target) => target,
+        Err(error) => return bad_request(error),
+    };
+    let id = target.id.clone();
+    match state.scheduler.add_target(target).await {
+        Ok(()) => match state.db.status(&id).await {
+            Ok(Some(status)) => (StatusCode::CREATED, Json(status)).into_response(),
+            Ok(None) => not_found(&id),
+            Err(error) => internal_error(error),
+        },
+        Err(error) => internal_error(error),
+    }
+}
+
+async fn delete_target(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(response) = authorize_required(&state, &headers) {
+        return response;
+    }
+
+    match state.scheduler.remove_target(&id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => not_found(&id),
+        Err(error) => internal_error(error),
+    }
+}
+
+async fn patch_target(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<PatchTargetRequest>,
+) -> impl IntoResponse {
+    if let Some(response) = authorize_required(&state, &headers) {
+        return response;
+    }
+
+    match state.scheduler.set_enabled(&id, request.enabled).await {
+        Ok(true) => match state.db.status(&id).await {
+            Ok(Some(status)) => (StatusCode::OK, Json(status)).into_response(),
+            Ok(None) => not_found(&id),
+            Err(error) => internal_error(error),
+        },
+        Ok(false) => not_found(&id),
+        Err(error) => internal_error(error),
+    }
+}
+
+fn unique_slug(name: &str, existing: &[String]) -> String {
+    let base = slugify(name);
+    let base = if base.is_empty() {
+        "target".to_string()
+    } else {
+        base
+    };
+    if !existing.iter().any(|id| id == &base) {
+        return base;
+    }
+    (2..)
+        .map(|suffix| format!("{base}-{suffix}"))
+        .find(|candidate| !existing.iter().any(|id| id == candidate))
+        .expect("slug suffix space is unbounded")
+}
+
+fn slugify(name: &str) -> String {
+    name.to_lowercase()
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
 async fn check_target_by_id(
     state: &HttpState,
     id: &str,
     mark_manual_report: bool,
 ) -> Result<(), axum::response::Response> {
-    let Some(target_config) = state.scheduler.target(id).await else {
+    let Some(target) = state.scheduler.target(id).await else {
         return Err(not_found(id));
     };
 
-    match target_config.to_target() {
-        Ok(target) => match evaluator::check_target(&state.config, &state.client, target).await {
-            Ok(outcome) => match state.db.record_success(&outcome).await {
-                Ok(should_alert) => {
-                    if should_alert && mark_manual_report {
-                        state
-                            .db
-                            .mark_alert_sent(&outcome.target.id)
-                            .await
-                            .map_err(internal_error)?;
-                    }
-                    Ok(())
-                }
-                Err(error) => Err(internal_error(error)),
-            },
-            Err(error) => {
-                let error_text = error.to_string();
+    match monitor::run_check(&state.config, state.db.as_ref(), &state.client, target).await {
+        Ok(monitor::CheckReport::Checked {
+            outcome,
+            should_alert,
+        }) => {
+            if should_alert && mark_manual_report {
                 state
                     .db
-                    .record_error(id, &error_text)
+                    .mark_alert_sent(&outcome.target.id)
                     .await
                     .map_err(internal_error)?;
-                Ok(())
             }
-        },
+            Ok(())
+        }
+        Ok(monitor::CheckReport::Failed { .. }) => Ok(()),
         Err(error) => Err(internal_error(error)),
     }
 }

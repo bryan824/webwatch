@@ -23,9 +23,6 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    #[snafu(display("config must define at least one target"))]
-    EmptyTargets,
-
     #[snafu(display("target {target_id} must define at least one condition"))]
     EmptyConditions { target_id: String },
 

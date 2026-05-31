@@ -190,6 +190,7 @@ mod tests {
             target_id: "mug".to_string(),
             name: "Campfire Mug".to_string(),
             url: "https://example.com/mug".to_string(),
+            enabled: true,
             matched: Some(true),
             engine_used: Some(EngineUsed::Http),
             price_cents: Some(4250),

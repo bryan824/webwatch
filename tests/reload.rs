@@ -5,8 +5,8 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use webwatch::{
     config::{
-        AppConfig, BrowserConfig, ConditionConfig, ConditionKind, SchedulerConfig, ServerConfig,
-        TargetConfig, TargetStatus,
+        AppConfig, BrowserConfig, Condition, ConditionKind, SchedulerConfig, ServerConfig,
+        Target, TargetStatus,
     },
     db,
     http::HttpState,
@@ -48,14 +48,14 @@ async fn page_c() -> Html<&'static str> {
     Html("<html><body>Add to cart</body></html>")
 }
 
-fn target(id: &str, url: String, value: &str) -> TargetConfig {
-    TargetConfig {
+fn target(id: &str, url: String, value: &str) -> Target {
+    Target {
         id: id.to_string(),
         name: id.to_string(),
         url,
         enabled: true,
         interval_secs: Some(3_600),
-        conditions: vec![ConditionConfig {
+        conditions: vec![Condition {
             id: Some("text".to_string()),
             kind: ConditionKind::Text,
             negate: false,
@@ -67,7 +67,7 @@ fn target(id: &str, url: String, value: &str) -> TargetConfig {
     }
 }
 
-fn write_targets(path: &std::path::Path, targets: &[TargetConfig]) {
+fn write_targets(path: &std::path::Path, targets: &[Target]) {
     let body = targets
         .iter()
         .map(|target| {
@@ -112,7 +112,7 @@ async fn reload(addr: SocketAddr) -> (StatusCode, String) {
 
 async fn spawn_webwatch(
     targets_path: std::path::PathBuf,
-    targets: Vec<TargetConfig>,
+    targets: Vec<Target>,
 ) -> (SocketAddr, Arc<dyn db::Persistence>) {
     let dir = tempfile::tempdir().expect("tempdir").keep();
     let db_path = dir.join(format!("{}.sqlite3", db::backend_name()));
@@ -129,7 +129,7 @@ async fn spawn_webwatch(
     let persistence: Arc<dyn db::Persistence> =
         Arc::from(db::connect(&config.sqlite_path).await.expect("connect"));
     persistence.migrate().await.expect("migrate");
-    persistence.sync_targets(&targets).await.expect("sync");
+    persistence.import_targets(&targets).await.expect("import");
     let client = reqwest::Client::new();
     let scheduler = Arc::new(Scheduler::new(
         config.clone(),
@@ -179,7 +179,7 @@ async fn reload_same_targets_reports_unchanged() {
 }
 
 #[tokio::test]
-async fn reload_adds_and_removes_targets() {
+async fn reload_imports_new_targets_without_removing() {
     let pages = spawn_page_fixture().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let targets_path = dir.path().join("targets.toml");
@@ -188,6 +188,7 @@ async fn reload_adds_and_removes_targets() {
     let target_c = target("C", format!("http://{pages}/c"), "Add to cart");
     write_targets(&targets_path, &[target_a.clone(), target_b.clone()]);
     let (addr, _) = spawn_webwatch(targets_path.clone(), vec![target_a.clone(), target_b]).await;
+    // Drop B from the file and add C; import adds C but keeps B (no purge).
     write_targets(&targets_path, &[target_a, target_c]);
 
     let client = reqwest::Client::new();
@@ -195,14 +196,12 @@ async fn reload_adds_and_removes_targets() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let report: ReloadResponse = serde_json::from_str(&body).expect("json");
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    let targets_response = client
+    let statuses = client
         .get(format!("http://{addr}/targets"))
         .bearer_auth("secret")
         .send()
         .await
-        .expect("targets");
-    assert_eq!(targets_response.status(), StatusCode::OK);
-    let statuses = targets_response
+        .expect("targets")
         .json::<Vec<TargetStatus>>()
         .await
         .expect("json");
@@ -212,8 +211,8 @@ async fn reload_adds_and_removes_targets() {
         .collect::<Vec<_>>();
 
     assert_eq!(report.added, vec!["C"]);
-    assert_eq!(report.removed, vec!["B"]);
-    assert_eq!(ids, vec!["A", "C"]);
+    assert!(report.removed.is_empty());
+    assert_eq!(ids, vec!["A", "B", "C"]);
 }
 
 #[tokio::test]
@@ -284,4 +283,135 @@ async fn reload_requires_bearer_auth() {
         .expect("reload");
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn create_target_via_api() {
+    let pages = spawn_page_fixture().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let targets_path = dir.path().join("targets.toml");
+    let seed = target("A", format!("http://{pages}/a"), "Add to cart");
+    write_targets(&targets_path, std::slice::from_ref(&seed));
+    let (addr, _) = spawn_webwatch(targets_path, vec![seed]).await;
+
+    let client = reqwest::Client::new();
+    let created = client
+        .post(format!("http://{addr}/targets"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({
+            "name": "Campfire Mug",
+            "url": format!("http://{pages}/b"),
+            "conditions": [{"kind": "text_appears", "value": "Add to cart"}],
+        }))
+        .send()
+        .await
+        .expect("create");
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let status = created.json::<TargetStatus>().await.expect("json");
+    assert_eq!(status.target_id, "campfire-mug");
+
+    let ids = client
+        .get(format!("http://{addr}/targets"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("targets")
+        .json::<Vec<TargetStatus>>()
+        .await
+        .expect("json")
+        .into_iter()
+        .map(|status| status.target_id)
+        .collect::<Vec<_>>();
+    assert!(ids.contains(&"campfire-mug".to_string()));
+}
+
+#[tokio::test]
+async fn create_target_requires_auth() {
+    let pages = spawn_page_fixture().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let targets_path = dir.path().join("targets.toml");
+    let seed = target("A", format!("http://{pages}/a"), "Add to cart");
+    write_targets(&targets_path, std::slice::from_ref(&seed));
+    let (addr, _) = spawn_webwatch(targets_path, vec![seed]).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}/targets"))
+        .json(&serde_json::json!({
+            "name": "No Auth",
+            "url": format!("http://{pages}/b"),
+            "conditions": [{"kind": "text_appears", "value": "Add to cart"}],
+        }))
+        .send()
+        .await
+        .expect("create");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn delete_target_via_api() {
+    let pages = spawn_page_fixture().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let targets_path = dir.path().join("targets.toml");
+    let target_a = target("A", format!("http://{pages}/a"), "Add to cart");
+    let target_b = target("B", format!("http://{pages}/b"), "Add to cart");
+    write_targets(&targets_path, &[target_a.clone(), target_b.clone()]);
+    let (addr, _) = spawn_webwatch(targets_path, vec![target_a, target_b]).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .delete(format!("http://{addr}/targets/B"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("delete");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let ids = client
+        .get(format!("http://{addr}/targets"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("targets")
+        .json::<Vec<TargetStatus>>()
+        .await
+        .expect("json")
+        .into_iter()
+        .map(|status| status.target_id)
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["A"]);
+}
+
+#[tokio::test]
+async fn toggle_enabled_via_api() {
+    let pages = spawn_page_fixture().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let targets_path = dir.path().join("targets.toml");
+    let target_a = target("A", format!("http://{pages}/a"), "Add to cart");
+    write_targets(&targets_path, std::slice::from_ref(&target_a));
+    let (addr, _) = spawn_webwatch(targets_path, vec![target_a]).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .patch(format!("http://{addr}/targets/A"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({ "enabled": false }))
+        .send()
+        .await
+        .expect("patch");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Disabled, not deleted — still listed.
+    let ids = client
+        .get(format!("http://{addr}/targets"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("targets")
+        .json::<Vec<TargetStatus>>()
+        .await
+        .expect("json")
+        .into_iter()
+        .map(|status| status.target_id)
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["A"]);
 }

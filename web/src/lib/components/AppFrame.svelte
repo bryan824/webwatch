@@ -53,7 +53,7 @@
         </div>
       {:else if (targets.data ?? []).length === 0}
         <p class="p-4 font-mono text-xs text-muted-foreground">
-          no targets — edit <code>targets.toml</code> then reload.
+          no targets yet — use <span class="text-primary">+ target</span> to add one.
         </p>
       {:else}
         <TargetList targets={targets.data ?? []} {selectedId} />

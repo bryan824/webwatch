@@ -21,6 +21,14 @@ curl http://127.0.0.1:3000/health
 curl http://127.0.0.1:3000/targets
 curl http://127.0.0.1:3000/targets/campfire-mug/status
 curl -X POST -H "Authorization: Bearer $WEBWATCH_API_TOKEN" http://127.0.0.1:3000/notify/status
+
+# Manage the watch list at runtime (all require the API token):
+curl -X POST -H "Authorization: Bearer $WEBWATCH_API_TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"Campfire Mug","url":"https://example.com/mug","conditions":[{"kind":"text_appears","value":"Add to cart"}]}' \
+  http://127.0.0.1:3000/targets
+curl -X PATCH -H "Authorization: Bearer $WEBWATCH_API_TOKEN" -H 'content-type: application/json' \
+  -d '{"enabled":false}' http://127.0.0.1:3000/targets/campfire-mug
+curl -X DELETE -H "Authorization: Bearer $WEBWATCH_API_TOKEN" http://127.0.0.1:3000/targets/campfire-mug
 ```
 
 When running normally, Discord receives an alert when a target transitions from not matched/unknown to matched.
@@ -29,7 +37,7 @@ Use the status API on demand to verify service health, target status, engine use
 
 Use `POST /notify/status` to fresh-check all enabled targets and send one compact status report to Discord. This is the webhook verification path; webwatch sends no startup or heartbeat messages.
 
-Edit `targets.toml` and reload the watch list without restarting:
+The database is the source of truth for the watch list. `targets.toml` seeds it on first run (when empty); after that, add/remove/enable/disable targets from the web UI or the `/targets` API above. Editing `targets.toml` and importing it (upsert — never deletes targets added elsewhere) is still supported:
 
 ```bash
 curl -X POST -H "Authorization: Bearer $WEBWATCH_API_TOKEN" http://127.0.0.1:3000/targets/reload
@@ -45,7 +53,7 @@ curl -H "Authorization: Bearer $WEBWATCH_API_TOKEN" http://127.0.0.1:3000/target
 
 ## Web UI
 
-A SvelteKit dashboard (in `web/`) lists every target with its latest status, evidence, conditions, and errors, and can trigger the existing actions: re-check a target, reload `targets.toml`, and send a Discord report.
+A SvelteKit dashboard (in `web/`) lists every target with its latest status, evidence, conditions, and errors. It can add a target (with a full condition builder), delete one, enable/disable it, re-check a target, import `targets.toml`, and send a Discord report.
 
 Development (two processes — the Vite dev server proxies the API):
 
@@ -160,26 +168,15 @@ docker pull ghcr.io/<github-owner>/webwatch:sha-<commit>
 
 If the package is private, authenticate for pulls (`read:packages`) or make the package public in GitHub Packages.
 
-## Persistence backend
+## Persistence
 
-Diesel is the default backend:
-
-```bash
-cargo build
-```
-
-Build another backend by disabling defaults and enabling exactly one feature:
-
-```bash
-cargo build --no-default-features --features persistence-sqlx
-cargo build --no-default-features --features persistence-seaorm
-```
-
-Enabling multiple persistence features fails at compile time.
+webwatch stores targets and check history in a local SQLite database (via Diesel) at the `sqlite_path` from `config.toml`. The schema is created automatically on first run; no manual migration step is needed.
 
 ## Target files
 
-Targets use full URLs. Keyword/search-based targets are deferred. Set `targets_path` in `config.toml` or `WEBWATCH_TARGETS` to use a non-default watch-list file. Relative `targets_path` values resolve relative to `config.toml`.
+The database is authoritative for the watch list. `targets.toml` seeds it on first run (when the database has no targets); afterward, manage targets through the web UI or the `/targets` API, and use `POST /targets/reload` to re-import the file (upsert — it never deletes targets added elsewhere). A missing or empty `targets.toml` is fine once the database is populated.
+
+Targets use full URLs. Keyword/search-based targets are deferred. Set `targets_path` in `config.toml` or `WEBWATCH_TARGETS` to use a non-default seed file. Relative `targets_path` values resolve relative to `config.toml`.
 
 Default scheduler: 5 minutes plus ±30 seconds jitter.
 

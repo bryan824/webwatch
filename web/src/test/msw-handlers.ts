@@ -5,7 +5,7 @@ import type { TargetStatus } from '$lib/api/types';
 export const sampleTargets: TargetStatus[] = [
   {
     target_id: 'campfire-mug', name: 'Campfire Mug', url: 'https://example.com/products/campfire-mug',
-    matched: true, engine_used: 'http', price_cents: 3800,
+    enabled: true, matched: true, engine_used: 'http', price_cents: 3800,
     evidence: ['"Add to cart" found'], condition_results: [
       { condition_id: 'condition-1', kind: 'text', matched: true, evidence: ['"Add to cart" found'], observed_price_cents: null, error: null }
     ],
@@ -13,7 +13,7 @@ export const sampleTargets: TargetStatus[] = [
   },
   {
     target_id: 'sale-price', name: 'Sale Price Watch', url: 'https://example.com/sale',
-    matched: null, engine_used: null, price_cents: null, evidence: [], condition_results: [],
+    enabled: true, matched: null, engine_used: null, price_cents: null, evidence: [], condition_results: [],
     last_success_at: null, last_error_at: null, last_error: null, last_alert_at: null
   }
 ];

@@ -1,15 +1,23 @@
 <!-- web/src/lib/components/TargetDetail.svelte -->
 <script lang="ts">
   import { Button } from '$lib/components/ui/button';
+  import * as AlertDialog from '$lib/components/ui/alert-dialog';
   import StatusBadge from './StatusBadge.svelte';
   import ConditionResultRow from './ConditionResultRow.svelte';
   import { deriveStatus } from '$lib/status';
   import { formatPrice, formatRelative } from '$lib/format';
   import type { TargetStatus } from '$lib/api/types';
 
-  let { target, checking, onCheckNow }:
-    { target: TargetStatus; checking: boolean; onCheckNow: () => void } = $props();
+  let { target, checking, mutating, onCheckNow, onToggleEnabled, onDelete }: {
+    target: TargetStatus;
+    checking: boolean;
+    mutating: boolean;
+    onCheckNow: () => void;
+    onToggleEnabled: () => void;
+    onDelete: () => void;
+  } = $props();
 
+  let confirmDelete = $state(false);
   const s = $derived(deriveStatus(target));
   const meta = $derived<[string, string][]>([
     ['engine', target.engine_used ?? '—'],
@@ -22,7 +30,14 @@
 <div class="mx-auto flex h-full max-w-3xl animate-in flex-col gap-6 p-6 fade-in duration-300">
   <div class="flex items-start justify-between gap-4">
     <div class="min-w-0">
-      <h1 class="truncate font-mono text-xl font-semibold tracking-tight">{target.name}</h1>
+      <div class="flex items-center gap-2">
+        <h1 class="truncate font-mono text-xl font-semibold tracking-tight">{target.name}</h1>
+        {#if !target.enabled}
+          <span class="shrink-0 rounded border border-border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+            disabled
+          </span>
+        {/if}
+      </div>
       <a
         href={target.url}
         target="_blank"
@@ -32,9 +47,22 @@
         {target.url} ↗
       </a>
     </div>
-    <Button class="font-mono text-xs" onclick={onCheckNow} disabled={checking}>
-      {checking ? 'checking…' : 'check now'}
-    </Button>
+    <div class="flex shrink-0 items-center gap-2">
+      <Button variant="outline" class="font-mono text-xs" onclick={onToggleEnabled} disabled={mutating}>
+        {target.enabled ? 'disable' : 'enable'}
+      </Button>
+      <Button class="font-mono text-xs" onclick={onCheckNow} disabled={checking}>
+        {checking ? 'checking…' : 'check now'}
+      </Button>
+      <Button
+        variant="ghost"
+        class="font-mono text-xs text-red-400 hover:text-red-300"
+        onclick={() => (confirmDelete = true)}
+        disabled={mutating}
+      >
+        delete
+      </Button>
+    </div>
   </div>
 
   <StatusBadge {target} />
@@ -82,3 +110,20 @@
     </section>
   {/if}
 </div>
+
+<AlertDialog.Root bind:open={confirmDelete}>
+  <AlertDialog.Content>
+    <AlertDialog.Header>
+      <AlertDialog.Title class="font-mono tracking-tight">Delete {target.name}?</AlertDialog.Title>
+      <AlertDialog.Description>
+        Removes the target and its check history. This cannot be undone.
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+      <AlertDialog.Action onclick={onDelete} disabled={mutating}>
+        {mutating ? 'deleting…' : 'delete'}
+      </AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>

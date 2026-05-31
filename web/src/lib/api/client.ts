@@ -1,7 +1,13 @@
 // web/src/lib/api/client.ts
 import { get } from 'svelte/store';
 import { token } from '../stores/token';
-import type { HealthResponse, NotifyStatusResponse, ReloadReport, TargetStatus } from './types';
+import type {
+  HealthResponse,
+  NotifyStatusResponse,
+  ReloadReport,
+  TargetInput,
+  TargetStatus
+} from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -35,3 +41,17 @@ export const checkTarget = (id: string) =>
   apiFetch<TargetStatus>(`/targets/${encodeURIComponent(id)}/status`);
 export const reloadTargets = () => apiFetch<ReloadReport>('/targets/reload', { method: 'POST' });
 export const notifyStatus = () => apiFetch<NotifyStatusResponse>('/notify/status', { method: 'POST' });
+export const createTarget = (input: TargetInput) =>
+  apiFetch<TargetStatus>('/targets', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input)
+  });
+export const deleteTarget = (id: string) =>
+  apiFetch<void>(`/targets/${encodeURIComponent(id)}`, { method: 'DELETE' });
+export const setTargetEnabled = (id: string, enabled: boolean) =>
+  apiFetch<TargetStatus>(`/targets/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled })
+  });

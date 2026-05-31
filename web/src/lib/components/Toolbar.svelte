@@ -3,6 +3,7 @@
   import { Button } from '$lib/components/ui/button';
   import * as AlertDialog from '$lib/components/ui/alert-dialog';
   import ThemeToggle from './ThemeToggle.svelte';
+  import AddTargetDialog from './AddTargetDialog.svelte';
   import { createReloadMutation, createNotifyMutation } from '$lib/api/mutations';
 
   let { onOpenToken, updatedLabel }:
@@ -11,6 +12,7 @@
   const reload = createReloadMutation();
   const notify = createNotifyMutation();
   let confirmOpen = $state(false);
+  let addOpen = $state(false);
 </script>
 
 <header class="flex h-12 items-center justify-between border-b border-border/70 bg-card/40 px-4 backdrop-blur">
@@ -23,6 +25,7 @@
     <span class="hidden font-mono text-[11px] text-muted-foreground sm:inline">/ updated {updatedLabel}</span>
   </div>
   <div class="flex items-center gap-1.5">
+    <Button size="sm" class="h-8 font-mono text-xs" onclick={() => (addOpen = true)}>+ target</Button>
     <Button
       variant="outline"
       size="sm"
@@ -32,7 +35,7 @@
     >
       {reload.isPending ? 'reloading…' : 'reload'}
     </Button>
-    <Button size="sm" class="h-8 font-mono text-xs" onclick={() => (confirmOpen = true)}>send report</Button>
+    <Button variant="outline" size="sm" class="h-8 font-mono text-xs" onclick={() => (confirmOpen = true)}>send report</Button>
     <Button
       variant="ghost"
       size="icon"
@@ -62,3 +65,5 @@
     </AlertDialog.Footer>
   </AlertDialog.Content>
 </AlertDialog.Root>
+
+<AddTargetDialog bind:open={addOpen} />

@@ -18,7 +18,7 @@
     selected
       ? 'border-l-primary bg-accent/60'
       : 'border-l-transparent hover:border-l-border hover:bg-accent/40'
-  }`}
+  } ${target.enabled ? '' : 'opacity-60'}`}
   aria-current={selected ? 'page' : undefined}
 >
   <StatusDot kind={s.kind} />
@@ -27,7 +27,7 @@
       {target.name}
     </span>
     <span class="block truncate font-mono text-[11px] text-muted-foreground">
-      {s.kind === 'error' ? 'ERR · ' : ''}{formatRelative(target.last_success_at ?? target.last_error_at)}
+      {target.enabled ? '' : 'OFF · '}{s.kind === 'error' ? 'ERR · ' : ''}{formatRelative(target.last_success_at ?? target.last_error_at)}
     </span>
   </span>
 </a>

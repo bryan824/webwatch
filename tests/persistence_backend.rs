@@ -1,18 +1,18 @@
 use chrono::Utc;
 use webwatch::{
     config::{CheckOutcome, ConditionKind, EngineUsed},
-    config::{ConditionConfig, TargetConfig},
+    config::{Condition, Target},
     db,
 };
 
-fn target_config() -> TargetConfig {
-    TargetConfig {
+fn target_config() -> Target {
+    Target {
         id: "target".to_string(),
         name: "Target".to_string(),
         url: "https://example.com/product".to_string(),
         enabled: true,
         interval_secs: None,
-        conditions: vec![ConditionConfig {
+        conditions: vec![Condition {
             id: Some("stock".to_string()),
             kind: ConditionKind::Text,
             negate: false,
@@ -35,10 +35,10 @@ async fn active_backend_persists_status() {
 
     let target_config = target_config();
     persistence
-        .sync_targets(std::slice::from_ref(&target_config))
+        .import_targets(std::slice::from_ref(&target_config))
         .await
-        .expect("sync target");
-    let target = target_config.to_target().expect("target");
+        .expect("import target");
+    let target = target_config.validated().expect("valid target");
     let outcome = CheckOutcome {
         target,
         engine_used: EngineUsed::Http,
@@ -65,11 +65,11 @@ async fn active_backend_persists_status() {
 }
 
 #[tokio::test]
-async fn sync_targets_purges_removed_rows() {
+async fn import_targets_upserts_without_purging() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir
         .path()
-        .join(format!("purge-{}.sqlite3", db::backend_name()));
+        .join(format!("import-{}.sqlite3", db::backend_name()));
     let persistence = db::connect(path.to_str().expect("utf8 path"))
         .await
         .expect("connect");
@@ -77,26 +77,56 @@ async fn sync_targets_purges_removed_rows() {
 
     let target_a = target_config();
     let mut target_b = target_config();
-    target_b.id = "removed".to_string();
-    target_b.name = "Removed".to_string();
+    target_b.id = "second".to_string();
+    target_b.name = "Second".to_string();
 
     persistence
-        .sync_targets(&[target_a.clone(), target_b])
+        .import_targets(&[target_a.clone(), target_b])
         .await
-        .expect("initial sync");
-    assert_eq!(persistence.statuses().await.expect("statuses").len(), 2);
+        .expect("initial import");
+    assert_eq!(persistence.list_targets().await.expect("list").len(), 2);
 
+    // Re-importing only A must NOT purge B (the DB is authoritative).
     persistence
-        .sync_targets(&[target_a])
+        .import_targets(std::slice::from_ref(&target_a))
         .await
-        .expect("purge sync");
-    let statuses = persistence.statuses().await.expect("statuses");
+        .expect("re-import");
+    assert_eq!(persistence.list_targets().await.expect("list").len(), 2);
 
-    assert_eq!(statuses.len(), 1);
-    assert_eq!(statuses[0].target_id, "target");
+    // Explicit removal drops the row and its state.
+    persistence.remove_target("second").await.expect("remove");
+    let remaining = persistence.list_targets().await.expect("list");
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, "target");
     assert!(persistence
-        .status("removed")
+        .status("second")
         .await
         .expect("status")
         .is_none());
+}
+
+#[tokio::test]
+async fn set_enabled_persists_flag() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir
+        .path()
+        .join(format!("enabled-{}.sqlite3", db::backend_name()));
+    let persistence = db::connect(path.to_str().expect("utf8 path"))
+        .await
+        .expect("connect");
+    persistence.migrate().await.expect("migrate");
+    persistence
+        .import_targets(std::slice::from_ref(&target_config()))
+        .await
+        .expect("import");
+
+    persistence.set_enabled("target", false).await.expect("disable");
+    let target = persistence
+        .list_targets()
+        .await
+        .expect("list")
+        .into_iter()
+        .find(|target| target.id == "target")
+        .expect("target");
+    assert!(!target.enabled);
 }

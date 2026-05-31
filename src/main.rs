@@ -25,12 +25,18 @@ async fn run() -> Result<()> {
     let config_path =
         std::env::var("WEBWATCH_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
     let (config, targets_file) = AppConfig::load(&config_path)?;
-    let targets = Arc::new(targets_file.targets);
     let config = Arc::new(config);
     let persistence: Arc<dyn db::Persistence> = Arc::from(db::connect(&config.sqlite_path).await?);
     persistence.migrate().await?;
-    persistence.sync_targets(&targets).await?;
+    if persistence.list_targets().await?.is_empty() {
+        persistence.import_targets(&targets_file.targets).await?;
+        info!(
+            count = targets_file.targets.len(),
+            "seeded targets from file"
+        );
+    }
     info!(backend = db::backend_name(), "persistence backend selected");
+    let targets = persistence.list_targets().await?;
 
     let client = reqwest::Client::builder()
         .user_agent(config.user_agent.clone())
