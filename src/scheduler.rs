@@ -1,7 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use rand::Rng;
-use serde::Serialize;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
@@ -29,14 +28,6 @@ struct RunningTarget {
     handle: tokio::task::JoinHandle<()>,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
-pub struct ReloadReport {
-    pub added: Vec<String>,
-    pub removed: Vec<String>,
-    pub changed: Vec<String>,
-    pub unchanged: Vec<String>,
-}
-
 impl Scheduler {
     pub fn new(config: Arc<AppConfig>, db: Arc<dyn Persistence>, client: reqwest::Client) -> Self {
         Self {
@@ -56,80 +47,18 @@ impl Scheduler {
         }
     }
 
-    pub async fn reload(&self, targets: &[Target]) -> Result<ReloadReport> {
-        self.db.import_targets(targets).await?;
-        let mut inner = self.inner.lock().await;
-        let mut report = ReloadReport::default();
-        for target in targets.iter().filter(|target| target.enabled()) {
-            match inner
-                .tasks
-                .get(&target.id)
-                .map(|running| running.target == *target)
-            {
-                Some(true) => report.unchanged.push(target.id.clone()),
-                Some(false) => {
-                    report.changed.push(target.id.clone());
-                    self.reconcile(&mut inner, target.clone());
-                }
-                None => {
-                    report.added.push(target.id.clone());
-                    self.reconcile(&mut inner, target.clone());
-                }
-            }
-        }
-        sort_report(&mut report);
-        info!(
-            added = ?report.added,
-            changed = ?report.changed,
-            unchanged = ?report.unchanged,
-            "scheduler reload (import)"
-        );
-        Ok(report)
-    }
-
-    /// Create or update a target and reflect it in the running task set.
-    pub async fn add_target(&self, target: Target) -> Result<()> {
-        self.db.ensure_target(&target).await?;
+    pub async fn reconcile_target(&self, target: Target) {
         let mut inner = self.inner.lock().await;
         self.reconcile(&mut inner, target);
-        Ok(())
     }
 
-    /// Remove a target everywhere. Returns whether it existed.
-    pub async fn remove_target(&self, id: &str) -> Result<bool> {
-        let exists = self
-            .db
-            .list_targets()
-            .await?
-            .iter()
-            .any(|target| target.id == id);
-        if !exists {
-            return Ok(false);
-        }
-        self.db.remove_target(id).await?;
+    pub async fn remove_running_target(&self, id: &str) -> bool {
         let mut inner = self.inner.lock().await;
         if let Some(running) = inner.tasks.remove(id) {
             running.handle.abort();
+            return true;
         }
-        Ok(true)
-    }
-
-    /// Enable or disable a target. Returns whether the target existed.
-    pub async fn set_enabled(&self, id: &str, enabled: bool) -> Result<bool> {
-        let Some(mut target) = self
-            .db
-            .list_targets()
-            .await?
-            .into_iter()
-            .find(|target| target.id == id)
-        else {
-            return Ok(false);
-        };
-        self.db.set_enabled(id, enabled).await?;
-        target.enabled = enabled;
-        let mut inner = self.inner.lock().await;
-        self.reconcile(&mut inner, target);
-        Ok(true)
+        false
     }
 
     /// Start, restart, or stop a target's loop to match its `enabled` flag.
@@ -173,13 +102,6 @@ impl Scheduler {
             }
         })
     }
-}
-
-fn sort_report(report: &mut ReloadReport) {
-    report.added.sort();
-    report.removed.sort();
-    report.changed.sort();
-    report.unchanged.sort();
 }
 
 async fn run_target_loop(

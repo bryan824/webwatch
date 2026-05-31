@@ -299,24 +299,27 @@ impl Persistence for DieselPersistence {
                 .load::<StatusRow>(conn)
                 .map_err(db_err)?
                 .into_iter()
-                .map(|row| {
-                    status_from_parts(StatusParts {
-                        id: row.id,
-                        name: row.name,
-                        url: row.url,
-                        enabled: row.enabled,
-                        matched: row.matched,
-                        engine_used: row.engine_used,
-                        price_cents: row.price_cents,
-                        evidence_json: row.evidence_json,
-                        condition_results_json: row.condition_results_json,
-                        last_success_at: row.last_success_at,
-                        last_error_at: row.last_error_at,
-                        last_error: row.last_error,
-                        last_alert_at: row.last_alert_at,
-                    })
-                })
+                .map(status_from_row)
                 .collect()
+        })
+        .await
+    }
+
+    async fn status(&self, target_id: &str) -> Result<Option<TargetStatus>> {
+        let pool = self.pool.clone();
+        let target_id = target_id.to_string();
+        spawn(move || {
+            use diesel::sql_types::Text;
+
+            let conn = &mut conn(&pool)?;
+            sql_query(format!("SELECT * FROM ({STATUS_SQL}) WHERE id = ?1"))
+                .bind::<Text, _>(&target_id)
+                .load::<StatusRow>(conn)
+                .map_err(db_err)?
+                .into_iter()
+                .next()
+                .map(status_from_row)
+                .transpose()
         })
         .await
     }
@@ -325,7 +328,11 @@ impl Persistence for DieselPersistence {
 fn conn(
     pool: &DieselPool,
 ) -> Result<diesel::r2d2::PooledConnection<ConnectionManager<SqliteConnection>>> {
-    pool.get().map_err(db_err)
+    let mut conn = pool.get().map_err(db_err)?;
+    sql_query("PRAGMA busy_timeout = 5000")
+        .execute(&mut conn)
+        .map_err(db_err)?;
+    Ok(conn)
 }
 
 fn target_from_row(row: TargetRow) -> Result<Target> {
@@ -337,6 +344,24 @@ fn target_from_row(row: TargetRow) -> Result<Target> {
         enabled: row.enabled != 0,
         interval_secs: row.interval_secs.map(|secs| secs as u64),
         conditions,
+    })
+}
+
+fn status_from_row(row: StatusRow) -> Result<TargetStatus> {
+    status_from_parts(StatusParts {
+        id: row.id,
+        name: row.name,
+        url: row.url,
+        enabled: row.enabled,
+        matched: row.matched,
+        engine_used: row.engine_used,
+        price_cents: row.price_cents,
+        evidence_json: row.evidence_json,
+        condition_results_json: row.condition_results_json,
+        last_success_at: row.last_success_at,
+        last_error_at: row.last_error_at,
+        last_error: row.last_error,
+        last_alert_at: row.last_alert_at,
     })
 }
 

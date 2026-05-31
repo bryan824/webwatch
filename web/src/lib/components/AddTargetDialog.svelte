@@ -4,126 +4,57 @@
   import { Input } from '$lib/components/ui/input';
   import { Button } from '$lib/components/ui/button';
   import { createAddTargetMutation } from '$lib/api/mutations';
-  import type { ConditionWireKind, ConditionInput, TargetInput } from '$lib/api/types';
+  import type { ConditionWireKind } from '$lib/api/types';
+  import {
+    CONDITION_KINDS,
+    blankAddTargetDefaults,
+    blankConditionDraft,
+    buildTargetInput,
+    fieldsForCondition,
+    type AddTargetConditionDraftWithId
+  } from './addTargetForm';
 
   let { open = $bindable(false) }: { open?: boolean } = $props();
 
   const add = createAddTargetMutation();
 
-  type Draft = {
-    id: number;
-    kind: ConditionWireKind;
-    value: string;
-    selector: string;
-    price: string;
-    price_selector: string;
-  };
+  type Draft = AddTargetConditionDraftWithId;
+  const nextDraftId = () => Date.now() + Math.random();
+  const defaults = blankAddTargetDefaults(nextDraftId());
 
-  const KINDS: { value: ConditionWireKind; label: string }[] = [
-    { value: 'text_appears', label: 'text appears' },
-    { value: 'text_disappears', label: 'text disappears' },
-    { value: 'selector_exists', label: 'selector exists' },
-    { value: 'selector_missing', label: 'selector missing' },
-    { value: 'selector_text_contains', label: 'selector text contains' },
-    { value: 'selector_text_not_contains', label: 'selector text not contains' },
-    { value: 'price_below', label: 'price below' },
-    { value: 'price_above', label: 'price above' },
-    { value: 'price_changed', label: 'price changed' }
-  ];
-
-  let nextId = 0;
-  function blankDraft(): Draft {
-    return { id: nextId++, kind: 'text_appears', value: '', selector: '', price: '', price_selector: '' };
-  }
-
-  let name = $state('');
-  let url = $state('');
-  let enabled = $state(true);
-  let interval = $state('');
-  let conditions = $state<Draft[]>([blankDraft()]);
+  let name = $state(defaults.name);
+  let url = $state(defaults.url);
+  let enabled = $state(defaults.enabled);
+  let interval = $state(defaults.interval);
+  let conditions = $state<Draft[]>(defaults.conditions);
   let error = $state('');
 
-  const needsValue = (k: ConditionWireKind) =>
-    k === 'text_appears' ||
-    k === 'text_disappears' ||
-    k === 'selector_text_contains' ||
-    k === 'selector_text_not_contains';
-  const needsSelector = (k: ConditionWireKind) =>
-    k === 'selector_exists' ||
-    k === 'selector_missing' ||
-    k === 'selector_text_contains' ||
-    k === 'selector_text_not_contains';
-  const needsThreshold = (k: ConditionWireKind) => k === 'price_below' || k === 'price_above';
-  const isPrice = (k: ConditionWireKind) =>
-    k === 'price_below' || k === 'price_above' || k === 'price_changed';
 
   function addCondition() {
-    conditions = [...conditions, blankDraft()];
+    conditions = [...conditions, blankConditionDraft(nextDraftId())];
   }
   function removeCondition(id: number) {
     conditions = conditions.filter((c) => c.id !== id);
   }
   function reset() {
-    name = '';
-    url = '';
-    enabled = true;
-    interval = '';
-    conditions = [blankDraft()];
+    const defaults = blankAddTargetDefaults(nextDraftId());
+    name = defaults.name;
+    url = defaults.url;
+    enabled = defaults.enabled;
+    interval = defaults.interval;
+    conditions = defaults.conditions;
     error = '';
-  }
-
-  function buildConditions(): ConditionInput[] | null {
-    const out: ConditionInput[] = [];
-    for (const d of conditions) {
-      const c: ConditionInput = { kind: d.kind };
-      if (needsValue(d.kind)) {
-        if (!d.value.trim()) {
-          error = 'A text value is required for the selected condition.';
-          return null;
-        }
-        c.value = d.value.trim();
-      }
-      if (needsSelector(d.kind)) {
-        if (!d.selector.trim()) {
-          error = 'A CSS selector is required for the selected condition.';
-          return null;
-        }
-        c.selector = d.selector.trim();
-      }
-      if (needsThreshold(d.kind)) {
-        const dollars = Number.parseFloat(d.price);
-        if (!Number.isFinite(dollars)) {
-          error = 'A price threshold (USD) is required.';
-          return null;
-        }
-        c.threshold_cents = Math.round(dollars * 100);
-      }
-      if (isPrice(d.kind) && d.price_selector.trim()) c.price_selector = d.price_selector.trim();
-      out.push(c);
-    }
-    return out;
   }
 
   function submit() {
     error = '';
-    if (!name.trim()) {
-      error = 'Name is required.';
+    const result = buildTargetInput({ name, url, enabled, interval, conditions });
+    if (!result.ok) {
+      error = result.error;
       return;
     }
-    try {
-      new URL(url.trim());
-    } catch {
-      error = 'Enter a valid absolute URL (https://…).';
-      return;
-    }
-    const built = buildConditions();
-    if (!built) return;
 
-    const input: TargetInput = { name: name.trim(), url: url.trim(), enabled, conditions: built };
-    const mins = Number.parseFloat(interval);
-    if (interval.trim() && Number.isFinite(mins) && mins > 0) input.interval_secs = Math.round(mins * 60);
-
-    add.mutate(input, {
+    add.mutate(result.input, {
       onSuccess: () => {
         reset();
         open = false;
@@ -176,7 +107,7 @@
                 bind:value={c.kind}
                 class="h-8 flex-1 rounded-md border border-input bg-background px-2 font-mono text-xs"
               >
-                {#each KINDS as k}<option value={k.value}>{k.label}</option>{/each}
+                {#each CONDITION_KINDS as k}<option value={k.value}>{k.label}</option>{/each}
               </select>
               {#if conditions.length > 1}
                 <button
@@ -189,16 +120,16 @@
                 </button>
               {/if}
             </div>
-            {#if needsSelector(c.kind)}
+            {#if fieldsForCondition(c.kind).selector}
               <Input bind:value={c.selector} placeholder="CSS selector — e.g. .price" class="h-8 font-mono text-xs" />
             {/if}
-            {#if needsValue(c.kind)}
+            {#if fieldsForCondition(c.kind).value}
               <Input bind:value={c.value} placeholder="text to match" class="h-8 font-mono text-xs" />
             {/if}
-            {#if needsThreshold(c.kind)}
+            {#if fieldsForCondition(c.kind).threshold}
               <Input bind:value={c.price} placeholder="price threshold (USD) — e.g. 50.00" class="h-8 font-mono text-xs" />
             {/if}
-            {#if isPrice(c.kind)}
+            {#if fieldsForCondition(c.kind).priceSelector}
               <Input bind:value={c.price_selector} placeholder="price selector (optional)" class="h-8 font-mono text-xs" />
             {/if}
           </div>

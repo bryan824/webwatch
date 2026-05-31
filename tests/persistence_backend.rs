@@ -65,6 +65,65 @@ async fn active_backend_persists_status() {
 }
 
 #[tokio::test]
+async fn status_returns_existing_target_without_checks() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir
+        .path()
+        .join(format!("empty-status-{}.sqlite3", db::backend_name()));
+    let persistence = db::connect(path.to_str().expect("utf8 path"))
+        .await
+        .expect("connect");
+    persistence.migrate().await.expect("migrate");
+
+    persistence
+        .import_targets(std::slice::from_ref(&target_config()))
+        .await
+        .expect("import target");
+
+    let status = persistence
+        .status("target")
+        .await
+        .expect("status")
+        .expect("target status");
+
+    assert_eq!(status.target_id, "target");
+    assert_eq!(status.name, "Target");
+    assert_eq!(status.url, "https://example.com/product");
+    assert!(status.enabled);
+    assert_eq!(status.matched, None);
+    assert_eq!(status.engine_used, None);
+    assert_eq!(status.price_cents, None);
+    assert!(status.evidence.is_empty());
+    assert!(status.condition_results.is_empty());
+    assert_eq!(status.last_success_at, None);
+    assert_eq!(status.last_error_at, None);
+    assert_eq!(status.last_error, None);
+    assert_eq!(status.last_alert_at, None);
+}
+
+#[tokio::test]
+async fn status_returns_none_for_missing_target() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir
+        .path()
+        .join(format!("missing-status-{}.sqlite3", db::backend_name()));
+    let persistence = db::connect(path.to_str().expect("utf8 path"))
+        .await
+        .expect("connect");
+    persistence.migrate().await.expect("migrate");
+    persistence
+        .import_targets(std::slice::from_ref(&target_config()))
+        .await
+        .expect("import target");
+
+    assert!(persistence
+        .status("missing")
+        .await
+        .expect("status")
+        .is_none());
+}
+
+#[tokio::test]
 async fn import_targets_upserts_without_purging() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir
@@ -120,7 +179,10 @@ async fn set_enabled_persists_flag() {
         .await
         .expect("import");
 
-    persistence.set_enabled("target", false).await.expect("disable");
+    persistence
+        .set_enabled("target", false)
+        .await
+        .expect("disable");
     let target = persistence
         .list_targets()
         .await

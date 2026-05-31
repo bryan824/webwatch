@@ -11,8 +11,8 @@ use snafu::{ensure, ResultExt};
 use url::Url;
 
 use crate::error::{
-    EmptyConditionsSnafu, ParseConfigSnafu, ParseTargetUrlSnafu, ReadConfigSnafu, ReadTargetsSnafu,
-    Result,
+    EmptyConditionsSnafu, MissingConditionFieldSnafu, ParseConfigSnafu, ParseTargetUrlSnafu,
+    ReadConfigSnafu, ReadTargetsSnafu, Result,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -318,6 +318,35 @@ impl Default for SchedulerConfig {
     }
 }
 
+impl Condition {
+    fn validate_required_fields(&self) -> Result<()> {
+        match self.kind {
+            ConditionKind::Text => self.require_field(self.value.is_some(), "value")?,
+            ConditionKind::Selector => self.require_field(self.selector.is_some(), "selector")?,
+            ConditionKind::SelectorText => {
+                self.require_field(self.selector.is_some(), "selector")?;
+                self.require_field(self.value.is_some(), "value")?;
+            }
+            ConditionKind::Price => {
+                self.require_field(self.threshold_cents.is_some(), "threshold_cents")?;
+            }
+            ConditionKind::PriceObserved => {}
+        }
+        Ok(())
+    }
+
+    fn require_field(&self, present: bool, field: &'static str) -> Result<()> {
+        ensure!(
+            present,
+            MissingConditionFieldSnafu {
+                condition_id: self.id.clone().unwrap_or_else(|| "condition".to_string()),
+                field,
+            }
+        );
+        Ok(())
+    }
+}
+
 impl Target {
     pub fn enabled(&self) -> bool {
         self.enabled
@@ -347,6 +376,7 @@ impl Target {
             if condition.id.is_none() {
                 condition.id = Some(format!("condition-{}", index + 1));
             }
+            condition.validate_required_fields()?;
         }
         Ok(())
     }
@@ -525,6 +555,83 @@ mod tests {
             assert_eq!(condition.kind, kind);
             assert_eq!(condition.negate, negate);
         }
+    }
+
+    #[test]
+    fn rejects_text_condition_without_value() {
+        let error = validate_single_condition("kind = \"text_appears\"").expect_err("invalid");
+        assert!(error
+            .to_string()
+            .contains("condition condition-1 requires value"));
+    }
+
+    #[test]
+    fn rejects_selector_condition_without_selector() {
+        let error = validate_single_condition("kind = \"selector_exists\"").expect_err("invalid");
+        assert!(error
+            .to_string()
+            .contains("condition condition-1 requires selector"));
+    }
+
+    #[test]
+    fn rejects_selector_text_condition_without_selector() {
+        let error = validate_single_condition(
+            r#"
+            kind = "selector_text_contains"
+            value = "Add to cart"
+            "#,
+        )
+        .expect_err("invalid");
+        assert!(error
+            .to_string()
+            .contains("condition condition-1 requires selector"));
+    }
+
+    #[test]
+    fn rejects_selector_text_condition_without_value() {
+        let error = validate_single_condition(
+            r#"
+            kind = "selector_text_contains"
+            selector = "button"
+            "#,
+        )
+        .expect_err("invalid");
+        assert!(error
+            .to_string()
+            .contains("condition condition-1 requires value"));
+    }
+
+    #[test]
+    fn rejects_price_condition_without_threshold() {
+        let error = validate_single_condition("kind = \"price_below\"").expect_err("invalid");
+        assert!(error
+            .to_string()
+            .contains("condition condition-1 requires threshold_cents"));
+    }
+
+    #[test]
+    fn accepts_price_changed_without_price_selector() {
+        let targets = validate_single_condition("kind = \"price_changed\"").expect("valid");
+        assert_eq!(
+            targets.targets[0].conditions[0].kind,
+            ConditionKind::PriceObserved
+        );
+    }
+
+    fn validate_single_condition(condition: &str) -> Result<TargetsFile, crate::Error> {
+        toml::from_str::<TargetsFile>(&format!(
+            r#"
+            [[targets]]
+            id = "target"
+            name = "Target"
+            url = "https://example.com/product"
+
+            [[targets.conditions]]
+            {condition}
+            "#
+        ))
+        .expect("parse targets")
+        .resolve_and_validate()
     }
 
     #[test]

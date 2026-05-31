@@ -3,9 +3,7 @@ use std::{net::SocketAddr, sync::Arc};
 use axum::{body::Body, http::Request, response::Html, routing::get, Router};
 use tower::ServiceExt;
 use webwatch::{
-    config::{
-        AppConfig, BrowserConfig, Condition, SchedulerConfig, ServerConfig, Target,
-    },
+    config::{AppConfig, BrowserConfig, Condition, SchedulerConfig, ServerConfig, Target},
     config::{ConditionKind, EngineUsed},
     db, evaluator,
     http::HttpState,

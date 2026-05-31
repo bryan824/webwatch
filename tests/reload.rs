@@ -5,8 +5,8 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use webwatch::{
     config::{
-        AppConfig, BrowserConfig, Condition, ConditionKind, SchedulerConfig, ServerConfig,
-        Target, TargetStatus,
+        AppConfig, BrowserConfig, Condition, ConditionKind, SchedulerConfig, ServerConfig, Target,
+        TargetStatus,
     },
     db,
     http::HttpState,
@@ -310,19 +310,52 @@ async fn create_target_via_api() {
     let status = created.json::<TargetStatus>().await.expect("json");
     assert_eq!(status.target_id, "campfire-mug");
 
-    let ids = client
+    let response = client
         .get(format!("http://{addr}/targets"))
         .bearer_auth("secret")
         .send()
         .await
-        .expect("targets")
-        .json::<Vec<TargetStatus>>()
-        .await
+        .expect("targets");
+    let status_code = response.status();
+    let body = response.text().await.expect("body");
+    assert_eq!(status_code, StatusCode::OK, "{body}");
+    let ids = serde_json::from_str::<Vec<TargetStatus>>(&body)
         .expect("json")
         .into_iter()
         .map(|status| status.target_id)
         .collect::<Vec<_>>();
     assert!(ids.contains(&"campfire-mug".to_string()));
+}
+
+#[tokio::test]
+async fn create_target_rejects_missing_required_condition_field() {
+    let pages = spawn_page_fixture().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let targets_path = dir.path().join("targets.toml");
+    let seed = target("A", format!("http://{pages}/a"), "Add to cart");
+    write_targets(&targets_path, std::slice::from_ref(&seed));
+    let (addr, _) = spawn_webwatch(targets_path, vec![seed]).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}/targets"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({
+            "name": "Invalid Target",
+            "url": format!("http://{pages}/b"),
+            "conditions": [{"kind": "text_appears"}],
+        }))
+        .send()
+        .await
+        .expect("create");
+
+    let status = response.status();
+    let body = response.text().await.expect("body");
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.contains("condition condition-1 requires value"),
+        "{body}"
+    );
 }
 
 #[tokio::test]

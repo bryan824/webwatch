@@ -7,5 +7,6 @@ pub mod evaluator;
 pub mod http;
 pub mod monitor;
 pub mod scheduler;
+pub mod targets;
 
 pub use error::{Error, Result};

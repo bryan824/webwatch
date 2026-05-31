@@ -1,4 +1,4 @@
-use std::{path::Path as FsPath, sync::Arc};
+use std::sync::Arc;
 
 use axum::{
     body::Body,
@@ -41,11 +41,12 @@ async fn static_handler(uri: Uri) -> Response {
 }
 
 use crate::{
-    config::{AppConfig, Condition, Target, TargetStatus, TargetsFile},
+    config::{AppConfig, Condition, TargetStatus},
     db,
     db::Persistence,
-    discord, monitor,
-    scheduler::{ReloadReport, Scheduler},
+    discord,
+    scheduler::Scheduler,
+    targets::{CreateTarget, ReloadReport, TargetLifecycle},
 };
 
 #[derive(Clone)]
@@ -105,6 +106,18 @@ struct CreateTargetRequest {
     conditions: Vec<Condition>,
 }
 
+impl From<CreateTargetRequest> for CreateTarget {
+    fn from(request: CreateTargetRequest) -> Self {
+        Self {
+            name: request.name,
+            url: request.url,
+            enabled: request.enabled,
+            interval_secs: request.interval_secs,
+            conditions: request.conditions,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct PatchTargetRequest {
     enabled: bool,
@@ -116,7 +129,9 @@ pub fn router(state: HttpState) -> Router {
         .route("/targets", get(targets).post(create_target))
         .route(
             "/targets/:id",
-            get(static_handler).delete(delete_target).patch(patch_target),
+            get(static_handler)
+                .delete(delete_target)
+                .patch(patch_target),
         )
         .route("/targets/:id/status", get(target_status))
         .route("/notify/status", post(notify_status))
@@ -133,12 +148,16 @@ async fn health() -> Json<HealthResponse> {
     })
 }
 
+fn lifecycle(state: &HttpState) -> TargetLifecycle {
+    TargetLifecycle::new(state.db.clone(), state.scheduler.clone())
+}
+
 async fn targets(State(state): State<HttpState>, headers: HeaderMap) -> impl IntoResponse {
     if let Some(response) = authorize_optional(&state, &headers) {
         return response;
     }
 
-    match state.db.statuses().await {
+    match lifecycle(&state).statuses().await {
         Ok(statuses) => (StatusCode::OK, Json(statuses)).into_response(),
         Err(error) => internal_error(error),
     }
@@ -153,11 +172,10 @@ async fn target_status(
         return response;
     }
 
-    if let Err(response) = check_target_by_id(&state, &id, false).await {
-        return response;
-    }
-
-    match state.db.status(&id).await {
+    match lifecycle(&state)
+        .status(&state.config, &state.client, &id)
+        .await
+    {
         Ok(Some(status)) => (StatusCode::OK, Json(status)).into_response(),
         Ok(None) => not_found(&id),
         Err(error) => internal_error(error),
@@ -169,13 +187,19 @@ async fn notify_status(State(state): State<HttpState>, headers: HeaderMap) -> im
         return response;
     }
 
+    let lifecycle = lifecycle(&state);
     for target in state.scheduler.current_targets().await {
-        if let Err(response) = check_target_by_id(&state, &target.id, true).await {
-            return response;
+        match lifecycle
+            .check_target_by_id(&state.config, &state.client, &target.id, true)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => return not_found(&target.id),
+            Err(error) => return internal_error(error),
         }
     }
 
-    match state.db.statuses().await {
+    match lifecycle.statuses().await {
         Ok(statuses) => {
             let summary = discord::render_status_report(&statuses);
             match discord::send_status_report(&state.client, &state.config, &summary).await {
@@ -200,18 +224,10 @@ async fn reload_targets(State(state): State<HttpState>, headers: HeaderMap) -> i
         return response;
     }
 
-    let Some(path) = state.config.targets_path.as_deref() else {
-        return internal_error(crate::Error::Database {
-            message: "targets_path not configured".to_string(),
-        });
-    };
-    let targets = match TargetsFile::load(FsPath::new(path)) {
-        Ok(targets) => targets,
-        Err(error) => return bad_request(error),
-    };
-
-    match state.scheduler.reload(&targets.targets).await {
+    match lifecycle(&state).reload_from_config(&state.config).await {
         Ok(report) => (StatusCode::OK, Json(ReloadTargetsResponse::from(report))).into_response(),
+        Err(error @ crate::Error::ReadTargets { .. })
+        | Err(error @ crate::Error::ParseConfig { .. }) => bad_request(error),
         Err(error) => internal_error(error),
     }
 }
@@ -225,32 +241,12 @@ async fn create_target(
         return response;
     }
 
-    let existing_ids = match state.db.list_targets().await {
-        Ok(targets) => targets
-            .into_iter()
-            .map(|target| target.id)
-            .collect::<Vec<_>>(),
-        Err(error) => return internal_error(error),
-    };
-    let target = Target {
-        id: unique_slug(&request.name, &existing_ids),
-        name: request.name,
-        url: request.url,
-        enabled: request.enabled.unwrap_or(true),
-        interval_secs: request.interval_secs,
-        conditions: request.conditions,
-    };
-    let target = match target.validated() {
-        Ok(target) => target,
-        Err(error) => return bad_request(error),
-    };
-    let id = target.id.clone();
-    match state.scheduler.add_target(target).await {
-        Ok(()) => match state.db.status(&id).await {
-            Ok(Some(status)) => (StatusCode::CREATED, Json(status)).into_response(),
-            Ok(None) => not_found(&id),
-            Err(error) => internal_error(error),
-        },
+    match lifecycle(&state).create(request.into()).await {
+        Ok(status) => (StatusCode::CREATED, Json(status)).into_response(),
+        Err(error @ crate::Error::EmptyConditions { .. })
+        | Err(error @ crate::Error::ParseTargetUrl { .. })
+        | Err(error @ crate::Error::MissingConditionField { .. })
+        | Err(error @ crate::Error::InvalidSelector { .. }) => bad_request(error),
         Err(error) => internal_error(error),
     }
 }
@@ -264,7 +260,7 @@ async fn delete_target(
         return response;
     }
 
-    match state.scheduler.remove_target(&id).await {
+    match lifecycle(&state).delete(&id).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => not_found(&id),
         Err(error) => internal_error(error),
@@ -281,66 +277,10 @@ async fn patch_target(
         return response;
     }
 
-    match state.scheduler.set_enabled(&id, request.enabled).await {
-        Ok(true) => match state.db.status(&id).await {
-            Ok(Some(status)) => (StatusCode::OK, Json(status)).into_response(),
-            Ok(None) => not_found(&id),
-            Err(error) => internal_error(error),
-        },
-        Ok(false) => not_found(&id),
+    match lifecycle(&state).set_enabled(&id, request.enabled).await {
+        Ok(Some(status)) => (StatusCode::OK, Json(status)).into_response(),
+        Ok(None) => not_found(&id),
         Err(error) => internal_error(error),
-    }
-}
-
-fn unique_slug(name: &str, existing: &[String]) -> String {
-    let base = slugify(name);
-    let base = if base.is_empty() {
-        "target".to_string()
-    } else {
-        base
-    };
-    if !existing.iter().any(|id| id == &base) {
-        return base;
-    }
-    (2..)
-        .map(|suffix| format!("{base}-{suffix}"))
-        .find(|candidate| !existing.iter().any(|id| id == candidate))
-        .expect("slug suffix space is unbounded")
-}
-
-fn slugify(name: &str) -> String {
-    name.to_lowercase()
-        .split(|character: char| !character.is_alphanumeric())
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
-}
-
-async fn check_target_by_id(
-    state: &HttpState,
-    id: &str,
-    mark_manual_report: bool,
-) -> Result<(), axum::response::Response> {
-    let Some(target) = state.scheduler.target(id).await else {
-        return Err(not_found(id));
-    };
-
-    match monitor::run_check(&state.config, state.db.as_ref(), &state.client, target).await {
-        Ok(monitor::CheckReport::Checked {
-            outcome,
-            should_alert,
-        }) => {
-            if should_alert && mark_manual_report {
-                state
-                    .db
-                    .mark_alert_sent(&outcome.target.id)
-                    .await
-                    .map_err(internal_error)?;
-            }
-            Ok(())
-        }
-        Ok(monitor::CheckReport::Failed { .. }) => Ok(()),
-        Err(error) => Err(internal_error(error)),
     }
 }
 
