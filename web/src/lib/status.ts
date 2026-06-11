@@ -1,13 +1,11 @@
-// web/src/lib/status.ts
-import type { TargetStatus } from './api/types';
+import type { TargetStatus } from './types';
 
 export type StatusKind = 'matched' | 'no_match' | 'unknown' | 'error';
 
 export interface DerivedStatus {
   kind: StatusKind;
   label: string;
-  /** Tailwind text/bg color token suffix used by StatusDot/StatusBadge */
-  tone: 'success' | 'muted' | 'warning' | 'destructive';
+  tone: 'green' | 'muted' | 'amber' | 'red';
 }
 
 function errorIsCurrent(t: TargetStatus): boolean {
@@ -18,8 +16,8 @@ function errorIsCurrent(t: TargetStatus): boolean {
 }
 
 export function deriveStatus(t: TargetStatus): DerivedStatus {
-  if (errorIsCurrent(t)) return { kind: 'error', label: 'Error', tone: 'destructive' };
-  if (t.matched === true) return { kind: 'matched', label: 'Matched', tone: 'success' };
+  if (errorIsCurrent(t)) return { kind: 'error', label: 'Error', tone: 'red' };
+  if (t.matched === true) return { kind: 'matched', label: 'Matched', tone: 'green' };
   if (t.matched === false) return { kind: 'no_match', label: 'No match', tone: 'muted' };
-  return { kind: 'unknown', label: 'Unknown', tone: 'warning' };
+  return { kind: 'unknown', label: 'Unknown', tone: 'amber' };
 }

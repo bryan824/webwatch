@@ -96,7 +96,7 @@ value = "{}"
 async fn reload(addr: SocketAddr) -> (StatusCode, String) {
     let response = reqwest::Client::new()
         .post(format!("http://{addr}/targets/reload"))
-        .bearer_auth("secret")
+
         .send()
         .await
         .expect("reload");
@@ -115,7 +115,6 @@ async fn spawn_webwatch(
         sqlite_path: db_path.to_string_lossy().to_string(),
         user_agent: "webwatch-test".to_string(),
         discord_webhook_url: None,
-        api_token: Some("secret".to_string()),
         targets_path: Some(targets_path.to_string_lossy().to_string()),
         server: ServerConfig::default(),
         scheduler: SchedulerConfig::default(),
@@ -193,7 +192,7 @@ async fn reload_imports_new_targets_without_removing() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let statuses = client
         .get(format!("http://{addr}/targets"))
-        .bearer_auth("secret")
+
         .send()
         .await
         .expect("targets")
@@ -243,13 +242,13 @@ async fn reload_parse_failure_leaves_existing_targets() {
     let client = reqwest::Client::new();
     let response = client
         .post(format!("http://{addr}/targets/reload"))
-        .bearer_auth("secret")
+
         .send()
         .await
         .expect("reload");
     let statuses = client
         .get(format!("http://{addr}/targets"))
-        .bearer_auth("secret")
+
         .send()
         .await
         .expect("targets")
@@ -260,24 +259,6 @@ async fn reload_parse_failure_leaves_existing_targets() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(statuses.len(), 1);
     assert_eq!(statuses[0].target_id, "A");
-}
-
-#[tokio::test]
-async fn reload_requires_bearer_auth() {
-    let pages = spawn_page_fixture().await;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let targets_path = dir.path().join("targets.toml");
-    let target_a = target("A", format!("http://{pages}/a"), "Add to cart");
-    write_targets(&targets_path, std::slice::from_ref(&target_a));
-    let (addr, _) = spawn_webwatch(targets_path, vec![target_a]).await;
-
-    let response = reqwest::Client::new()
-        .post(format!("http://{addr}/targets/reload"))
-        .send()
-        .await
-        .expect("reload");
-
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -292,7 +273,7 @@ async fn create_target_via_api() {
     let client = reqwest::Client::new();
     let created = client
         .post(format!("http://{addr}/targets"))
-        .bearer_auth("secret")
+
         .json(&serde_json::json!({
             "name": "Campfire Mug",
             "url": format!("http://{pages}/b"),
@@ -307,7 +288,7 @@ async fn create_target_via_api() {
 
     let response = client
         .get(format!("http://{addr}/targets"))
-        .bearer_auth("secret")
+
         .send()
         .await
         .expect("targets");
@@ -333,7 +314,7 @@ async fn create_target_rejects_missing_required_condition_field() {
 
     let response = reqwest::Client::new()
         .post(format!("http://{addr}/targets"))
-        .bearer_auth("secret")
+
         .json(&serde_json::json!({
             "name": "Invalid Target",
             "url": format!("http://{pages}/b"),
@@ -354,28 +335,6 @@ async fn create_target_rejects_missing_required_condition_field() {
 }
 
 #[tokio::test]
-async fn create_target_requires_auth() {
-    let pages = spawn_page_fixture().await;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let targets_path = dir.path().join("targets.toml");
-    let seed = target("A", format!("http://{pages}/a"), "Add to cart");
-    write_targets(&targets_path, std::slice::from_ref(&seed));
-    let (addr, _) = spawn_webwatch(targets_path, vec![seed]).await;
-
-    let response = reqwest::Client::new()
-        .post(format!("http://{addr}/targets"))
-        .json(&serde_json::json!({
-            "name": "No Auth",
-            "url": format!("http://{pages}/b"),
-            "conditions": [{"kind": "text_appears", "value": "Add to cart"}],
-        }))
-        .send()
-        .await
-        .expect("create");
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
 async fn delete_target_via_api() {
     let pages = spawn_page_fixture().await;
     let dir = tempfile::tempdir().expect("tempdir");
@@ -388,7 +347,7 @@ async fn delete_target_via_api() {
     let client = reqwest::Client::new();
     let response = client
         .delete(format!("http://{addr}/targets/B"))
-        .bearer_auth("secret")
+
         .send()
         .await
         .expect("delete");
@@ -396,7 +355,7 @@ async fn delete_target_via_api() {
 
     let ids = client
         .get(format!("http://{addr}/targets"))
-        .bearer_auth("secret")
+
         .send()
         .await
         .expect("targets")
@@ -421,7 +380,7 @@ async fn toggle_enabled_via_api() {
     let client = reqwest::Client::new();
     let response = client
         .patch(format!("http://{addr}/targets/A"))
-        .bearer_auth("secret")
+
         .json(&serde_json::json!({ "enabled": false }))
         .send()
         .await
@@ -431,7 +390,7 @@ async fn toggle_enabled_via_api() {
     // Disabled, not deleted — still listed.
     let ids = client
         .get(format!("http://{addr}/targets"))
-        .bearer_auth("secret")
+
         .send()
         .await
         .expect("targets")

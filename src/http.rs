@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{
     body::Body,
     extract::{Path, State},
-    http::{header, HeaderMap, StatusCode, Uri},
+    http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -152,11 +152,7 @@ fn lifecycle(state: &HttpState) -> TargetLifecycle {
     TargetLifecycle::new(state.db.clone(), state.scheduler.clone())
 }
 
-async fn targets(State(state): State<HttpState>, headers: HeaderMap) -> impl IntoResponse {
-    if let Some(response) = authorize_optional(&state, &headers) {
-        return response;
-    }
-
+async fn targets(State(state): State<HttpState>) -> impl IntoResponse {
     match lifecycle(&state).statuses().await {
         Ok(statuses) => (StatusCode::OK, Json(statuses)).into_response(),
         Err(error) => internal_error(error),
@@ -165,13 +161,8 @@ async fn targets(State(state): State<HttpState>, headers: HeaderMap) -> impl Int
 
 async fn target_status(
     State(state): State<HttpState>,
-    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(response) = authorize_optional(&state, &headers) {
-        return response;
-    }
-
     match lifecycle(&state)
         .status(&state.config, &state.client, &id)
         .await
@@ -182,11 +173,7 @@ async fn target_status(
     }
 }
 
-async fn notify_status(State(state): State<HttpState>, headers: HeaderMap) -> impl IntoResponse {
-    if let Some(response) = authorize_required(&state, &headers) {
-        return response;
-    }
-
+async fn notify_status(State(state): State<HttpState>) -> impl IntoResponse {
     let lifecycle = lifecycle(&state);
     for target in state.scheduler.current_targets().await {
         match lifecycle
@@ -219,11 +206,7 @@ async fn notify_status(State(state): State<HttpState>, headers: HeaderMap) -> im
     }
 }
 
-async fn reload_targets(State(state): State<HttpState>, headers: HeaderMap) -> impl IntoResponse {
-    if let Some(response) = authorize_required(&state, &headers) {
-        return response;
-    }
-
+async fn reload_targets(State(state): State<HttpState>) -> impl IntoResponse {
     match lifecycle(&state).reload_from_config(&state.config).await {
         Ok(report) => (StatusCode::OK, Json(ReloadTargetsResponse::from(report))).into_response(),
         Err(error @ crate::Error::ReadTargets { .. })
@@ -234,13 +217,8 @@ async fn reload_targets(State(state): State<HttpState>, headers: HeaderMap) -> i
 
 async fn create_target(
     State(state): State<HttpState>,
-    headers: HeaderMap,
     Json(request): Json<CreateTargetRequest>,
 ) -> impl IntoResponse {
-    if let Some(response) = authorize_required(&state, &headers) {
-        return response;
-    }
-
     match lifecycle(&state).create(request.into()).await {
         Ok(status) => (StatusCode::CREATED, Json(status)).into_response(),
         Err(error @ crate::Error::EmptyConditions { .. })
@@ -253,13 +231,8 @@ async fn create_target(
 
 async fn delete_target(
     State(state): State<HttpState>,
-    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(response) = authorize_required(&state, &headers) {
-        return response;
-    }
-
     match lifecycle(&state).delete(&id).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => not_found(&id),
@@ -269,63 +242,14 @@ async fn delete_target(
 
 async fn patch_target(
     State(state): State<HttpState>,
-    headers: HeaderMap,
     Path(id): Path<String>,
     Json(request): Json<PatchTargetRequest>,
 ) -> impl IntoResponse {
-    if let Some(response) = authorize_required(&state, &headers) {
-        return response;
-    }
-
     match lifecycle(&state).set_enabled(&id, request.enabled).await {
         Ok(Some(status)) => (StatusCode::OK, Json(status)).into_response(),
         Ok(None) => not_found(&id),
         Err(error) => internal_error(error),
     }
-}
-
-fn authorize_optional(state: &HttpState, headers: &HeaderMap) -> Option<axum::response::Response> {
-    let Some(token) = &state.config.api_token else {
-        return None;
-    };
-    authorize_token(token, headers)
-}
-
-fn authorize_required(state: &HttpState, headers: &HeaderMap) -> Option<axum::response::Response> {
-    let Some(token) = &state.config.api_token else {
-        return Some(
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(ErrorResponse {
-                    error: "WEBWATCH_API_TOKEN is required for this endpoint".to_string(),
-                }),
-            )
-                .into_response(),
-        );
-    };
-    authorize_token(token, headers)
-}
-
-fn authorize_token(token: &str, headers: &HeaderMap) -> Option<axum::response::Response> {
-    let expected = format!("Bearer {token}");
-    let authorized = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value == expected)
-        .unwrap_or(false);
-    if authorized {
-        return None;
-    }
-
-    Some(
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(ErrorResponse {
-                error: "missing or invalid bearer token".to_string(),
-            }),
-        )
-            .into_response(),
-    )
 }
 
 fn bad_request(error: crate::Error) -> axum::response::Response {

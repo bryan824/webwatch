@@ -228,7 +228,6 @@ mod tests {
             sqlite_path: db_path.to_string_lossy().to_string(),
             user_agent: "webwatch-test".to_string(),
             discord_webhook_url: None,
-            api_token: None,
             targets_path: None,
             server: ServerConfig::default(),
             scheduler: SchedulerConfig::default(),

@@ -146,7 +146,6 @@ mod tests {
             sqlite_path: "webwatch.sqlite3".to_string(),
             user_agent: "test".to_string(),
             discord_webhook_url: None,
-            api_token: None,
             targets_path: Some("targets.toml".to_string()),
             server: ServerConfig::default(),
             scheduler: SchedulerConfig::default(),

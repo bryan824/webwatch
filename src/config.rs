@@ -23,8 +23,6 @@ pub struct AppConfig {
     pub user_agent: String,
     #[serde(default)]
     pub discord_webhook_url: Option<String>,
-    #[serde(default)]
-    pub api_token: Option<String>,
     #[serde(default = "default_targets_path")]
     pub targets_path: Option<String>,
     #[serde(default)]
@@ -334,9 +332,6 @@ impl AppConfig {
     pub fn resolve_env(mut self) -> Result<Self> {
         if self.discord_webhook_url.is_none() {
             self.discord_webhook_url = env::var("DISCORD_WEBHOOK_URL").ok();
-        }
-        if self.api_token.is_none() {
-            self.api_token = env::var("WEBWATCH_API_TOKEN").ok();
         }
         if let Ok(path) = env::var("WEBWATCH_TARGETS") {
             self.targets_path = Some(path);
