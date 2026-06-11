@@ -5,13 +5,13 @@ import { ConditionCard } from './ConditionCard';
 import { ConfirmDialog } from './ConfirmDialog';
 import {
   blankCondition, coerceForSubject, describeCondition,
-  validateAndBuild, fromWire,
+  validateAndBuild,
 } from '../lib/conditions';
 import type { Condition, Subject } from '../lib/conditions';
 import { interpret } from '../lib/nl';
 import { createAddTargetMutation, createDeleteTargetMutation } from '../lib/mutations';
 import type { TargetInput, TargetStatus } from '../lib/types';
-import { addToast } from './Toast';
+
 
 const INTERVALS = [
   { secs: 300, label: '5m' },
@@ -81,10 +81,12 @@ export function BuilderPane(props: Props) {
   function setName(name: string) { setDraft('name', name); }
 
   function setNl(text: string) { setDraft('nl', text); }
-  function runNl() {
-    const result = interpret(draft.nl);
+  function runNl(text?: string) {
+    const input = text ?? draft.nl;
+    const result = interpret(input);
     if (!result.conditions.length) return;
     setDraft(produce((d) => {
+      if (text != null) d.nl = text;
       d.conditions = result.conditions;
       d.nlResult = { explanation: result.explanation, usedAi: result.usedAi };
     }));
@@ -143,7 +145,6 @@ export function BuilderPane(props: Props) {
       onSuccess: () => {
         setJustSaved(true);
         setTimeout(() => setJustSaved(false), 1600);
-        addToast(`${isEdit() ? 'Updated' : 'Created'} ${n}`, 'success');
         props.onSaved?.();
       },
     });
@@ -152,10 +153,7 @@ export function BuilderPane(props: Props) {
   function handleDelete() {
     if (!props.target) return;
     del.mutate(props.target.target_id, {
-      onSuccess: () => {
-        addToast('Deleted', 'success');
-        props.onDeleted?.();
-      },
+      onSuccess: () => props.onDeleted?.(),
     });
   }
 
@@ -242,7 +240,7 @@ export function BuilderPane(props: Props) {
                 <span style="color:var(--faint)">examples</span>
                 <For each={NL_EXAMPLES}>
                   {(ex) => (
-                    <button class="nl__chip" onClick={() => { setNl(ex); runNl(); }}>
+                    <button class="nl__chip" onClick={() => runNl(ex)}>
                       {ex}
                     </button>
                   )}

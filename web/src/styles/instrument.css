@@ -192,8 +192,7 @@ input, textarea, select { font: inherit; color: inherit; }
 .cond-result__evidence { font-family: var(--mono); font-size: 11px; color: var(--faint); flex: 1; min-width: 0; }
 .cond-result__error { font-family: var(--mono); font-size: 11px; color: var(--bad); }
 
-/* ───────────── builder (add target dialog content) ───────────── */
-.builder { display: flex; flex-direction: column; gap: 14px; }
+/* ───────────── builder ───────────── */
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .field > .label { margin-left: 1px; }
 .input {
