@@ -1,0 +1,25 @@
+{
+  "name": "web",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@msviderok/base-ui-solid": "^1.0.0-beta.11",
+    "@tanstack/solid-query": "^5.101.0",
+    "@tanstack/solid-router": "^1.170.15",
+    "solid-js": "^1.9.13",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16",
+    "vite-plugin-solid": "^2.11.12"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.9"
+  }
+}

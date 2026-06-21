@@ -1,0 +1,22 @@
+sqlite_path = "webwatch.sqlite3"
+targets_path = "targets.toml"
+user_agent = "webwatch/0.1 (+https://example.invalid; low-frequency page monitor)"
+
+[server]
+bind = "127.0.0.1:3000"
+
+[scheduler]
+default_interval_secs = 300
+jitter_secs = 30
+http_timeout_secs = 20
+
+# Optional browser renderer for JavaScript-rendered pages.
+# Start CloakBrowser separately, then enable this block.
+[renderer]
+enabled = false
+backend = "cloakbrowser"
+# endpoint = "http://127.0.0.1:9222"
+max_concurrency = 1
+navigation_timeout_ms = 30000
+operation_timeout_ms = 10000
+settle_ms = 750

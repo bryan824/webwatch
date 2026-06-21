@@ -1,0 +1,61 @@
+[env]
+DISCORD_WEBHOOK_URL = { age = "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBsR011ZWhkVHhVMWZZN2VBcUhnOG5ZZnQ3RUZVc0t4aW0xV1BoSnZEUGk0Cllqa29jNE40ZmxmNzYvaERVRFd2UzlNMW5Qak5SU3crTG5IVWNqSzZpdm8KLT4gc3NoLWVkMjU1MTkgYWprQnBBIFBtTkkvb3BLSTJaRUI3MmN4dElQNS9TdU92QmNWemNpdE8wUWxFVW9pQncKZTVzTXFFbUZEaUh1bGxXdDJjV21JOTZ0ZE5td1g4eGQzTUhoQ1JqY1FIcwotPiBEMXU9LC1ncmVhc2UgLGggJD8KVG1OMS96dHpCU3lRY3JlUjB3bE9RU0s4UDhJT2Vack1MZGRVUU5zUUtKRnVQdTY2T1hacmVWSllDdTZBb1JvWgpaSysycFVyTk1KZFhqNmZYcUcrc2gwYk5SbG9SdXJqWnFUOVZyUncyYTdGWDJQUzh3UQotLS0geEtMQmgwQkdPZHNmZ05RQjllei84ekE4OWVjNzhGeXJYbmE4emxRWEV4UQoZB1vsCIPmHx4FJQ9ApKUO4uA2jq6IB/o64HbBsSGHNFH40W1yKI5OZhuDcFVNCFdFKv2reXQW+oSWHrwsPD4uSQpoylDBf4bO7nwrESWK0CKyIVw0YIL8PGJa7mtGWdw/v/hm77cwDXXVbxHjXil4M7GVZpnUzWFRP6p4SS/waHsQPCMurcPW4kKrqlwwzeWPCF+gMI/rwb5sKbs" }
+CARGO_TERM_COLOR = "always"
+
+[tasks.check]
+description = "cargo check"
+run = "cargo check"
+
+[tasks.check-all]
+description = "cargo check --all-targets"
+run = "cargo check --all-targets"
+
+[tasks.clippy]
+description = "cargo clippy"
+run = "cargo clippy"
+
+[tasks.clippy-all]
+description = "cargo clippy --all-targets"
+run = "cargo clippy --all-targets"
+
+[tasks.pedantic]
+description = "cargo clippy with clippy::pedantic"
+run = "cargo clippy -- -W clippy::pedantic"
+
+[tasks.test]
+description = "cargo test"
+run = "cargo test"
+
+[tasks.nextest]
+description = "cargo nextest run"
+run = "cargo nextest run --hide-progress-bar --failure-output final"
+
+[tasks.doc]
+description = "cargo doc --no-deps"
+run = "cargo doc --no-deps"
+
+[tasks.doc-open]
+description = "cargo doc --no-deps --open"
+run = "cargo doc --no-deps --open"
+
+[tasks.run]
+description = "cargo run"
+run = "cargo run"
+
+[tasks.run-long]
+description = "cargo run, intended to be restarted by mise watch"
+run = "cargo run"
+sources = [
+  "src/**/*.rs",
+  "templates/**/*",
+  "migrations/**/*",
+  "static/**/*",
+  "Cargo.toml",
+  "Cargo.lock",
+  ".env",
+]
+
+[tasks.ex]
+description = "cargo run --example <example>"
+usage = 'arg "<example>" help="Example name"'
+run = 'cargo run --example "${usage_example?}"'

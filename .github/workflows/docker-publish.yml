@@ -1,0 +1,34 @@
+name: Publish Docker image
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          SHA_TAG="sha-${GITHUB_SHA::7}"
+
+          docker build -t "$IMAGE:latest" -t "$IMAGE:$SHA_TAG" .
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:$SHA_TAG"

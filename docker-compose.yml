@@ -1,0 +1,30 @@
+services:
+  cloakbrowser:
+    image: ${CLOAKBROWSER_IMAGE:-cloakhq/cloakbrowser}
+    profiles: ["browser"]
+    command: ["cloakserve", "--idle-timeout=300"]
+    ports:
+      - "127.0.0.1:9222:9222"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9222/json/version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  webwatch:
+    build: .
+    restart: unless-stopped
+    environment:
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:?set DISCORD_WEBHOOK_URL}
+      WEBWATCH_API_TOKEN: ${WEBWATCH_API_TOKEN:-}
+      RUST_LOG: ${RUST_LOG:-webwatch=info,tower_http=info}
+    volumes:
+      - ./config.docker.toml:/app/config.toml:ro
+      - ./targets.toml:/app/targets.toml:ro
+      - webwatch-data:/data
+    ports:
+      - "127.0.0.1:3000:3000"
+
+volumes:
+  webwatch-data:

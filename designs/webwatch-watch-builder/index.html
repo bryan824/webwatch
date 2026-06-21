@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>webwatch · Watch Builder</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+
+  <!-- One Solid runtime shared by the Solid submodules AND Base UI (peer dep),
+       so reactivity can't break from duplicate instances. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "solid-js": "https://esm.sh/solid-js@1.9.3",
+      "solid-js/web": "https://esm.sh/solid-js@1.9.3/web?external=solid-js",
+      "solid-js/store": "https://esm.sh/solid-js@1.9.3/store?external=solid-js",
+      "solid-js/html": "https://esm.sh/solid-js@1.9.3/html?external=solid-js,solid-js/web",
+      "@msviderok/base-ui-solid": "https://esm.sh/@msviderok/base-ui-solid@1.0.0-beta.11?external=solid-js,solid-js/web,solid-js/store"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

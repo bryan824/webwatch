@@ -1,0 +1,12 @@
+/target
+/webwatch.sqlite3
+/snapshots
+/config.toml
+/.env
+
+/.rpiv
+/.pi
+/.superpowers
+/.claude
+/skills-lock.json
+/web/build

@@ -1,0 +1,50 @@
+   [[targets]]
+   id = "cos-midi-shirt-dress-white-6-8"
+   name = "COS white midi shirt dress sizes 6/8"
+   url = "https://www.cos.com/en-us/women/womenswear/dresses/mididresses/product/belted-short-sleeved-midi-shirt-dress-white-1271953004"
+   enabled = true
+
+   [targets.render]
+   policy = "render_first"
+   scenario_match = "any"
+   fingerprint_seed = "cos-midi-shirt-dress-white"
+   wait_ms = 5000
+
+   [[targets.render.steps]]
+   op = "wait_for"
+   selector = "[data-testid='size-selector-button-36']"
+   timeout_ms = 20000
+
+   [[targets.render.scenarios]]
+   id = "us-6"
+   label = "US 6"
+
+   [[targets.render.scenarios.steps]]
+   op = "click"
+   selector = "[data-testid='size-selector-button-36']"
+   settle_ms = 2000
+
+   [[targets.render.scenarios]]
+   id = "us-8"
+   label = "US 8"
+
+   [[targets.render.scenarios.steps]]
+   op = "click"
+   selector = "[data-testid='size-selector-button-38']"
+   settle_ms = 2000
+
+   [[targets.conditions]]
+   id = "add-to-bag"
+   kind = "selector_text_contains"
+   selector = "[data-testid='mobile-atb-button']"
+   value = "ADD TO BAG"
+
+   [[targets]]
+   id = "apple-refurb-mac-mini"
+   name = "Apple Refurbished Mac mini back in stock"
+   url = "https://www.apple.com/shop/refurbished/mac/mac-mini"
+   enabled = true
+
+   [[targets.conditions]]
+   id = "mac-mini-listed"
+   kind = "url_unchanged"
