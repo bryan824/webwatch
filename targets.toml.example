@@ -1,0 +1,27 @@
+[[targets]]
+id = "campfire-mug"
+name = "Campfire Mug"
+url = "https://example.com/products/campfire-mug"
+enabled = true
+
+[[targets.conditions]]
+kind = "text_appears"
+value = "Add to cart"
+
+[[targets.conditions]]
+kind = "price_below"
+threshold_cents = 5000
+price_selector = ".price"
+
+# Redirect-based stock check: some stores 301 a product/category URL back to a
+# parent page when nothing is in stock. "url_unchanged" matches when the URL is
+# served without redirecting (i.e. the listing is live again); "url_redirects"
+# is its inverse.
+[[targets]]
+id = "apple-refurb-mac-mini"
+name = "Apple Refurbished Mac mini back in stock"
+url = "https://www.apple.com/shop/refurbished/mac/mac-mini"
+enabled = true
+
+[[targets.conditions]]
+kind = "url_unchanged"
